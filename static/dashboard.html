@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dashboard — Apps</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #f5f5f5;
+      padding: 2rem;
+      max-width: 1000px;
+      margin: 0 auto;
+    }
+    h1 { margin-bottom: 0.5rem; }
+    .subtitle { color: #666; margin-bottom: 1.5rem; font-size: 0.95rem; }
+    .generate-form {
+      background: #fff;
+      border-radius: 8px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+      padding: 1.25rem;
+      margin-bottom: 2rem;
+    }
+    .generate-form h2 { font-size: 1.1rem; margin-bottom: 0.75rem; }
+    .generate-form input, .generate-form textarea {
+      width: 100%;
+      padding: 0.5rem 0.75rem;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      font-size: 0.95rem;
+      font-family: inherit;
+      margin-bottom: 0.75rem;
+    }
+    .generate-form input:focus, .generate-form textarea:focus { outline: none; border-color: #4a90d9; }
+    .generate-form textarea { resize: vertical; min-height: 100px; }
+    .generate-form button {
+      padding: 0.5rem 1.25rem;
+      background: #4a90d9;
+      color: #fff;
+      border: none;
+      border-radius: 4px;
+      font-size: 0.95rem;
+      cursor: pointer;
+    }
+    .generate-form button:hover { background: #357abd; }
+    .generate-form button:disabled { background: #ccc; cursor: not-allowed; }
+    .generate-status { margin-top: 0.5rem; font-size: 0.875rem; color: #666; }
+    .generate-status.error { color: #d32f2f; }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 1rem;
+    }
+    .card {
+      background: #fff;
+      border-radius: 8px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+      padding: 1.25rem;
+      cursor: pointer;
+      transition: box-shadow 0.15s, transform 0.1s;
+      text-decoration: none;
+      color: inherit;
+      display: block;
+    }
+    .card:hover {
+      box-shadow: 0 4px 16px rgba(0,0,0,0.15);
+      transform: translateY(-2px);
+    }
+    .card h3 {
+      font-size: 1.1rem;
+      margin-bottom: 0.5rem;
+      color: #333;
+    }
+    .card .meta {
+      font-size: 0.85rem;
+      color: #888;
+    }
+    .card .creds {
+      font-size: 0.8rem;
+      color: #555;
+      background: #f9f9f9;
+      border: 1px solid #e0e0e0;
+      border-radius: 4px;
+      padding: 0.4rem 0.5rem;
+      margin-top: 0.5rem;
+      font-family: monospace;
+      word-break: break-all;
+    }
+    .success-box {
+      background: #e8f5e9;
+      border: 1px solid #a5d6a7;
+      border-radius: 6px;
+      padding: 1rem;
+      margin-top: 0.75rem;
+    }
+    .success-box h3 { font-size: 1rem; color: #2e7d32; margin-bottom: 0.5rem; }
+    .success-box .cred-line { font-family: monospace; font-size: 0.875rem; margin: 0.25rem 0; }
+    .success-box a { color: #4a90d9; text-decoration: underline; }
+    .spinner {
+      text-align: center;
+      padding: 3rem;
+      color: #666;
+    }
+    .spinner::after {
+      content: "";
+      display: inline-block;
+      width: 24px;
+      height: 24px;
+      border: 3px solid #ccc;
+      border-top-color: #4a90d9;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      vertical-align: middle;
+      margin-left: 0.5rem;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .error { color: #d32f2f; text-align: center; padding: 2rem; }
+    .empty { color: #888; text-align: center; padding: 2rem; font-style: italic; }
+  </style>
+</head>
+<body>
+  <h1>Apps</h1>
+  <p class="subtitle">Generate new apps or open existing ones.</p>
+
+  <div class="generate-form">
+    <h2>Generate a new app</h2>
+    <input type="text" id="gen-title" placeholder="App title (optional)">
+    <textarea id="gen-body" placeholder="Describe the app you want to build..."></textarea>
+    <button id="gen-btn">Generate</button>
+    <div class="generate-status" id="gen-status"></div>
+  </div>
+
+  <div id="content">
+    <div class="spinner">Loading apps...</div>
+  </div>
+
+  <script>
+    async function authFetch(url, opts) {
+      const res = await fetch(url, opts);
+      if (res.status === 401) {
+        window.location.href = "/login";
+        throw new Error("Unauthorized");
+      }
+      return res;
+    }
+
+    function escapeHtml(str) {
+      const div = document.createElement("div");
+      div.textContent = str;
+      return div.innerHTML;
+    }
+
+    async function loadApps() {
+      const container = document.getElementById("content");
+      try {
+        const res = await authFetch("/api/apps");
+        if (!res.ok) {
+          const data = await res.json();
+          throw new Error(data.error || "Failed to load apps");
+        }
+        const apps = await res.json();
+
+        if (apps.length === 0) {
+          container.innerHTML = '<div class="empty">No apps yet. Generate one above.</div>';
+          return;
+        }
+
+        container.innerHTML = '<div class="grid">' + apps.map(a =>
+          `<a class="card" href="/apps/${a.id}">
+            <h3>${escapeHtml(a.title)}</h3>
+            <div class="meta">${escapeHtml(a.created_at)}</div>
+            ${a.cred_username ? `<div class="creds">User: ${escapeHtml(a.cred_username)}<br>Pass: ${escapeHtml(a.cred_password)}</div>` : ''}
+          </a>`
+        ).join("") + '</div>';
+      } catch (e) {
+        if (e.message !== "Unauthorized") {
+          container.innerHTML = `<div class="error">${escapeHtml(e.message)}</div>`;
+        }
+      }
+    }
+
+    document.getElementById("gen-btn").addEventListener("click", async () => {
+      const title = document.getElementById("gen-title").value.trim();
+      const body = document.getElementById("gen-body").value.trim();
+      const status = document.getElementById("gen-status");
+      const btn = document.getElementById("gen-btn");
+
+      if (!body) {
+        status.textContent = "Please enter an app description.";
+        status.className = "generate-status error";
+        return;
+      }
+
+      btn.disabled = true;
+      status.textContent = "Generating app... this may take a minute.";
+      status.className = "generate-status";
+
+      try {
+        const res = await authFetch("/api/apps", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title: title || undefined, body }),
+        });
+        if (!res.ok) {
+          const data = await res.json();
+          throw new Error(data.error || "Generation failed");
+        }
+        const data = await res.json();
+        const { appId, credentials } = data;
+        btn.disabled = false;
+        status.className = "generate-status";
+        status.innerHTML = "";
+        const box = document.createElement("div");
+        box.className = "success-box";
+        box.innerHTML = `<h3>App generated!</h3>
+          <div class="cred-line"><strong>Username:</strong> ${escapeHtml(credentials.username)}</div>
+          <div class="cred-line"><strong>Password:</strong> ${escapeHtml(credentials.password)}</div>
+          <p style="margin-top:0.5rem"><a href="/apps/${appId}">Open app &rarr;</a></p>`;
+        status.appendChild(box);
+        loadApps();
+      } catch (e) {
+        status.textContent = e.message;
+        status.className = "generate-status error";
+        btn.disabled = false;
+      }
+    });
+
+    loadApps();
+  </script>
+</body>
+</html>
