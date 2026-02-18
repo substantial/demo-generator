@@ -5,20 +5,63 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Dashboard — Apps</title>
   <style>
+    :root {
+      --bg: #f5f5f5;
+      --surface: #fff;
+      --surface-alt: #f9f9f9;
+      --text: #1a1a1a;
+      --text-secondary: #666;
+      --text-muted: #888;
+      --border: #e0e0e0;
+      --border-light: #ccc;
+      --accent: #4a90d9;
+      --accent-hover: #357abd;
+      --danger: #d32f2f;
+      --danger-hover: #b71c1c;
+      --success-bg: #e8f5e9;
+      --success-border: #a5d6a7;
+      --success-text: #2e7d32;
+      --shadow: rgba(0,0,0,0.1);
+      --shadow-hover: rgba(0,0,0,0.15);
+      --overlay: rgba(0,0,0,0.4);
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #121212;
+        --surface: #1e1e1e;
+        --surface-alt: #2a2a2a;
+        --text: #e4e4e4;
+        --text-secondary: #a0a0a0;
+        --text-muted: #777;
+        --border: #333;
+        --border-light: #444;
+        --accent: #5b9fd6;
+        --accent-hover: #79b3e0;
+        --danger: #ef5350;
+        --danger-hover: #f44336;
+        --success-bg: #1b3a1e;
+        --success-border: #2e7d32;
+        --success-text: #81c784;
+        --shadow: rgba(0,0,0,0.3);
+        --shadow-hover: rgba(0,0,0,0.5);
+        --overlay: rgba(0,0,0,0.6);
+      }
+    }
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      background: #f5f5f5;
+      background: var(--bg);
+      color: var(--text);
       padding: 2rem;
       max-width: 1000px;
       margin: 0 auto;
     }
     h1 { margin-bottom: 0.5rem; }
-    .subtitle { color: #666; margin-bottom: 1.5rem; font-size: 0.95rem; }
+    .subtitle { color: var(--text-secondary); margin-bottom: 1.5rem; font-size: 0.95rem; }
     .generate-form {
-      background: #fff;
+      background: var(--surface);
       border-radius: 8px;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+      box-shadow: 0 2px 8px var(--shadow);
       padding: 1.25rem;
       margin-bottom: 2rem;
     }
@@ -26,183 +69,209 @@
     .generate-form input, .generate-form textarea {
       width: 100%;
       padding: 0.5rem 0.75rem;
-      border: 1px solid #ccc;
+      border: 1px solid var(--border-light);
       border-radius: 4px;
       font-size: 0.95rem;
       font-family: inherit;
       margin-bottom: 0.75rem;
+      background: var(--surface);
+      color: var(--text);
     }
-    .generate-form input:focus, .generate-form textarea:focus { outline: none; border-color: #4a90d9; }
+    .generate-form input:focus, .generate-form textarea:focus { outline: none; border-color: var(--accent); }
     .generate-form textarea { resize: vertical; min-height: 100px; }
     .generate-form button {
       padding: 0.5rem 1.25rem;
-      background: #4a90d9;
+      background: var(--accent);
       color: #fff;
       border: none;
       border-radius: 4px;
       font-size: 0.95rem;
       cursor: pointer;
     }
-    .generate-form button:hover { background: #357abd; }
-    .generate-form button:disabled { background: #ccc; cursor: not-allowed; }
-    .generate-status { margin-top: 0.5rem; font-size: 0.875rem; color: #666; }
-    .generate-status.error { color: #d32f2f; }
+    .generate-form button:hover { background: var(--accent-hover); }
+    .generate-form button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .generate-status { margin-top: 0.5rem; font-size: 0.875rem; color: var(--text-secondary); }
+    .generate-status.error { color: var(--danger); }
     .grid {
       display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
       gap: 1rem;
     }
     .card {
-      background: #fff;
+      background: var(--surface);
       border-radius: 8px;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+      box-shadow: 0 2px 8px var(--shadow);
       padding: 1.25rem;
-      cursor: pointer;
       transition: box-shadow 0.15s, transform 0.1s;
-      text-decoration: none;
-      color: inherit;
-      display: block;
+      display: flex;
+      flex-direction: column;
     }
     .card:hover {
-      box-shadow: 0 4px 16px rgba(0,0,0,0.15);
+      box-shadow: 0 4px 16px var(--shadow-hover);
       transform: translateY(-2px);
     }
+    .card-link { text-decoration: none; color: inherit; flex: 1; }
     .card h3 {
-      font-size: 1.1rem;
-      margin-bottom: 0.5rem;
-      color: #333;
+      font-size: 1.05rem;
+      margin-bottom: 0.35rem;
+      color: var(--text);
     }
     .card .meta {
-      font-size: 0.85rem;
-      color: #888;
+      font-size: 0.8rem;
+      color: var(--text-muted);
     }
     .card .description {
       font-size: 0.85rem;
-      color: #666;
-      margin-top: 0.35rem;
-      margin-bottom: 0.35rem;
+      color: var(--text-secondary);
+      margin-top: 0.4rem;
       display: -webkit-box;
       -webkit-line-clamp: 2;
       -webkit-box-orient: vertical;
       overflow: hidden;
+      line-height: 1.4;
     }
     .card .creds {
       font-size: 0.8rem;
-      color: #555;
-      background: #f9f9f9;
-      border: 1px solid #e0e0e0;
+      color: var(--text-secondary);
+      background: var(--surface-alt);
+      border: 1px solid var(--border);
       border-radius: 4px;
-      padding: 0.4rem 0.5rem;
+      padding: 0.4rem 0.6rem;
       margin-top: 0.5rem;
-      font-family: monospace;
-      word-break: break-all;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.5rem;
     }
+    .creds-info { font-family: monospace; font-size: 0.78rem; line-height: 1.5; }
+    .creds-info .pass-hidden { color: var(--text-muted); letter-spacing: 2px; }
+    .creds-toggle {
+      background: none;
+      border: none;
+      color: var(--accent);
+      cursor: pointer;
+      font-size: 0.75rem;
+      white-space: nowrap;
+      padding: 0.15rem 0;
+    }
+    .creds-toggle:hover { text-decoration: underline; }
     .card-actions {
       display: flex;
       gap: 0.4rem;
       margin-top: 0.6rem;
       flex-wrap: wrap;
+      padding-top: 0.5rem;
+      border-top: 1px solid var(--border);
     }
     .card-actions button {
-      padding: 0.3rem 0.6rem;
+      padding: 0.3rem 0.7rem;
       font-size: 0.75rem;
-      border: 1px solid #ccc;
+      border: 1px solid var(--border-light);
       border-radius: 4px;
-      background: #fff;
+      background: var(--surface);
       cursor: pointer;
-      color: #333;
+      color: var(--text-secondary);
+      transition: background 0.1s;
     }
-    .card-actions button:hover { background: #f0f0f0; }
-    .card-actions .btn-danger { color: #d32f2f; border-color: #d32f2f; }
-    .card-actions .btn-danger:hover { background: #fde8e8; }
-    .card-actions .btn-primary { color: #4a90d9; border-color: #4a90d9; }
-    .card-actions .btn-primary:hover { background: #e8f0fa; }
+    .card-actions button:hover { background: var(--surface-alt); }
+    .card-actions .btn-danger { color: var(--danger); border-color: var(--danger); }
+    .card-actions .btn-danger:hover { background: color-mix(in srgb, var(--danger) 10%, var(--surface)); }
+    .card-actions .btn-primary { color: var(--accent); border-color: var(--accent); }
+    .card-actions .btn-primary:hover { background: color-mix(in srgb, var(--accent) 10%, var(--surface)); }
     .modal-overlay {
       display: none;
       position: fixed;
       top: 0; left: 0; right: 0; bottom: 0;
-      background: rgba(0,0,0,0.4);
+      background: var(--overlay);
       z-index: 1000;
       align-items: center;
       justify-content: center;
     }
     .modal-overlay.open { display: flex; }
     .modal {
-      background: #fff;
-      border-radius: 8px;
-      box-shadow: 0 8px 30px rgba(0,0,0,0.25);
+      background: var(--surface);
+      border-radius: 10px;
+      box-shadow: 0 8px 30px var(--shadow-hover);
       padding: 1.5rem;
       width: 100%;
       max-width: 400px;
+      color: var(--text);
     }
     .modal h3 { margin-bottom: 1rem; font-size: 1.1rem; }
-    .modal label { display: block; font-size: 0.875rem; margin-bottom: 0.25rem; color: #333; }
+    .modal label { display: block; font-size: 0.875rem; margin-bottom: 0.25rem; color: var(--text-secondary); }
     .modal input {
       width: 100%;
       padding: 0.5rem 0.75rem;
-      border: 1px solid #ccc;
+      border: 1px solid var(--border-light);
       border-radius: 4px;
       font-size: 0.95rem;
       margin-bottom: 0.75rem;
+      background: var(--surface-alt);
+      color: var(--text);
     }
-    .modal input:focus { outline: none; border-color: #4a90d9; }
-    .modal-actions { display: flex; gap: 0.5rem; justify-content: flex-end; margin-top: 0.5rem; }
+    .modal input:focus { outline: none; border-color: var(--accent); }
+    .modal-divider { border: none; border-top: 1px solid var(--border); margin: 0.75rem 0; }
+    .modal-actions { display: flex; gap: 0.5rem; justify-content: flex-end; margin-top: 0.75rem; }
     .modal-actions button {
-      padding: 0.4rem 1rem;
+      padding: 0.45rem 1rem;
       border-radius: 4px;
       font-size: 0.9rem;
       cursor: pointer;
-      border: 1px solid #ccc;
-      background: #fff;
+      border: 1px solid var(--border-light);
+      background: var(--surface);
+      color: var(--text);
     }
-    .modal-actions button.primary { background: #4a90d9; color: #fff; border-color: #4a90d9; }
-    .modal-actions button.primary:hover { background: #357abd; }
-    .modal-actions button.danger { background: #d32f2f; color: #fff; border-color: #d32f2f; }
-    .modal-actions button.danger:hover { background: #b71c1c; }
+    .modal-actions button:hover { background: var(--surface-alt); }
+    .modal-actions button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+    .modal-actions button.primary:hover { background: var(--accent-hover); }
+    .modal-actions button.danger { background: var(--danger); color: #fff; border-color: var(--danger); }
+    .modal-actions button.danger:hover { background: var(--danger-hover); }
     .toast {
       position: fixed;
       bottom: 20px;
       right: 20px;
-      background: #333;
-      color: #fff;
+      background: var(--surface);
+      color: var(--text);
+      border: 1px solid var(--border);
       padding: 0.6rem 1.2rem;
       border-radius: 6px;
       font-size: 0.875rem;
       z-index: 2000;
       opacity: 0;
       transition: opacity 0.3s;
+      box-shadow: 0 4px 16px var(--shadow);
     }
     .toast.show { opacity: 1; }
     .success-box {
-      background: #e8f5e9;
-      border: 1px solid #a5d6a7;
+      background: var(--success-bg);
+      border: 1px solid var(--success-border);
       border-radius: 6px;
       padding: 1rem;
       margin-top: 0.75rem;
     }
-    .success-box h3 { font-size: 1rem; color: #2e7d32; margin-bottom: 0.5rem; }
+    .success-box h3 { font-size: 1rem; color: var(--success-text); margin-bottom: 0.5rem; }
     .success-box .cred-line { font-family: monospace; font-size: 0.875rem; margin: 0.25rem 0; }
-    .success-box a { color: #4a90d9; text-decoration: underline; }
+    .success-box a { color: var(--accent); text-decoration: underline; }
     .spinner {
       text-align: center;
       padding: 3rem;
-      color: #666;
+      color: var(--text-secondary);
     }
     .spinner::after {
       content: "";
       display: inline-block;
       width: 24px;
       height: 24px;
-      border: 3px solid #ccc;
-      border-top-color: #4a90d9;
+      border: 3px solid var(--border-light);
+      border-top-color: var(--accent);
       border-radius: 50%;
       animation: spin 0.8s linear infinite;
       vertical-align: middle;
       margin-left: 0.5rem;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
-    .error { color: #d32f2f; text-align: center; padding: 2rem; }
-    .empty { color: #888; text-align: center; padding: 2rem; font-style: italic; }
+    .error-msg { color: var(--danger); text-align: center; padding: 2rem; }
+    .empty { color: var(--text-muted); text-align: center; padding: 2rem; font-style: italic; }
   </style>
 </head>
 <body>
@@ -227,7 +296,7 @@
       <h3>Edit App</h3>
       <label for="edit-title">App Name</label>
       <input type="text" id="edit-title" placeholder="App name">
-      <hr style="border:none;border-top:1px solid #e0e0e0;margin:0.75rem 0;">
+      <hr class="modal-divider">
       <label for="edit-username">Username</label>
       <input type="text" id="edit-username" placeholder="Username">
       <label for="edit-password">Password</label>
@@ -246,6 +315,7 @@
   <script>
     let currentEditAppId = null;
     let appsById = {};
+    const revealedPasswords = new Set();
 
     async function authFetch(url, opts) {
       const res = await fetch(url, opts);
@@ -256,7 +326,6 @@
       return res;
     }
 
-    // Safely parse JSON from a response, falling back to text on parse failure
     async function safeJson(res) {
       const text = await res.text();
       try {
@@ -277,6 +346,15 @@
       t.textContent = msg;
       t.classList.add("show");
       setTimeout(() => t.classList.remove("show"), 2500);
+    }
+
+    function togglePassword(appId) {
+      if (revealedPasswords.has(appId)) {
+        revealedPasswords.delete(appId);
+      } else {
+        revealedPasswords.add(appId);
+      }
+      renderApps();
     }
 
     function openEditModal(appId) {
@@ -303,7 +381,6 @@
       if (!title) { showToast("App name is required"); return; }
 
       try {
-        // Save title
         const app = appsById[appId];
         if (title !== app?.title) {
           const res = await authFetch(`/api/apps/${appId}/title`, {
@@ -314,7 +391,6 @@
           if (!res.ok) { const d = await safeJson(res); throw new Error(d.error); }
         }
 
-        // Save credentials if both provided, or skip if both empty
         if (username && password) {
           const res = await authFetch(`/api/apps/${appId}/credentials`, {
             method: "POST",
@@ -323,7 +399,6 @@
           });
           if (!res.ok) { const d = await safeJson(res); throw new Error(d.error); }
         } else if (!username && !password && app?.cred_username) {
-          // Both cleared — remove credentials
           const res = await authFetch(`/api/apps/${appId}/credentials/delete`, { method: "POST" });
           if (!res.ok) { const d = await safeJson(res); throw new Error(d.error); }
         } else if ((username && !password) || (!username && password)) {
@@ -372,6 +447,46 @@
       } catch (e) { showToast("Error: " + e.message); }
     }
 
+    let cachedApps = [];
+
+    function renderApps() {
+      const container = document.getElementById("content");
+      if (cachedApps.length === 0) {
+        container.innerHTML = '<div class="empty">No apps yet. Generate one above.</div>';
+        return;
+      }
+
+      container.innerHTML = '<div class="grid">' + cachedApps.map(a => {
+        const desc = a.description ? `<div class="description">${escapeHtml(a.description)}</div>` : '';
+        const revealed = revealedPasswords.has(a.id);
+        const creds = a.cred_username
+          ? `<div class="creds">
+              <div class="creds-info">
+                ${escapeHtml(a.cred_username)}
+                <br>
+                ${revealed
+                  ? escapeHtml(a.cred_password)
+                  : '<span class="pass-hidden">••••••••</span>'}
+              </div>
+              <button class="creds-toggle" data-action="reveal" data-id="${a.id}">${revealed ? 'Hide' : 'Show'}</button>
+            </div>`
+          : '';
+        return `<div class="card">
+          <a class="card-link" href="/apps/${a.id}">
+            <h3>${escapeHtml(a.title)}</h3>
+            <div class="meta">${escapeHtml(a.created_at)}</div>
+            ${desc}
+          </a>
+          ${creds}
+          <div class="card-actions">
+            <button class="btn-primary" data-action="edit" data-id="${a.id}">Edit</button>
+            ${a.cred_username ? `<button class="btn-primary" data-action="magic" data-id="${a.id}">Copy Magic Link</button>` : ''}
+            <button class="btn-danger" data-action="delete" data-id="${a.id}">Delete</button>
+          </div>
+        </div>`;
+      }).join("") + '</div>';
+    }
+
     async function loadApps() {
       const container = document.getElementById("content");
       try {
@@ -380,38 +495,14 @@
           const data = await safeJson(res);
           throw new Error(data.error || "Failed to load apps");
         }
-        const apps = await safeJson(res);
-
-        if (apps.length === 0) {
-          container.innerHTML = '<div class="empty">No apps yet. Generate one above.</div>';
-          return;
-        }
+        cachedApps = await safeJson(res);
 
         appsById = {};
-        apps.forEach(a => { appsById[a.id] = a; });
-
-        container.innerHTML = '<div class="grid">' + apps.map(a => {
-          const desc = a.description ? `<div class="description">${escapeHtml(a.description)}</div>` : '';
-          const creds = a.cred_username
-            ? `<div class="creds">User: ${escapeHtml(a.cred_username)}<br>Pass: ${escapeHtml(a.cred_password)}</div>`
-            : '';
-          return `<div class="card">
-            <a href="/apps/${a.id}" style="text-decoration:none;color:inherit;">
-              <h3>${escapeHtml(a.title)}</h3>
-              <div class="meta">${escapeHtml(a.created_at)}</div>
-              ${desc}
-              ${creds}
-            </a>
-            <div class="card-actions">
-              <button class="btn-primary" data-action="edit" data-id="${a.id}">Edit</button>
-              ${a.cred_username ? `<button class="btn-primary" data-action="magic" data-id="${a.id}">Copy Magic Link</button>` : ''}
-              <button class="btn-danger" data-action="delete" data-id="${a.id}">Delete</button>
-            </div>
-          </div>`;
-        }).join("") + '</div>';
+        cachedApps.forEach(a => { appsById[a.id] = a; });
+        renderApps();
       } catch (e) {
         if (e.message !== "Unauthorized") {
-          container.innerHTML = `<div class="error">${escapeHtml(e.message)}</div>`;
+          container.innerHTML = `<div class="error-msg">${escapeHtml(e.message)}</div>`;
         }
       }
     }
@@ -478,6 +569,7 @@
         case "edit": openEditModal(id); break;
         case "magic": copyMagicLink(id); break;
         case "delete": deleteAppAction(id); break;
+        case "reveal": togglePassword(id); break;
       }
     });
 
