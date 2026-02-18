@@ -616,7 +616,7 @@ export async function generateApp(
   }
 
   const html = parsed.html.replace(/\{\{APP_ID\}\}/g, appId);
-  saveApp(appId, issueUrl, title, html);
+  saveApp(appId, issueUrl, title, html, body);
   console.log(
     `[generate] App saved: "${title}" -> /apps/${appId}`,
   );

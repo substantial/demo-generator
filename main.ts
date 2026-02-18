@@ -1,8 +1,8 @@
 import { Hono } from "@hono/hono";
 import Anthropic from "@anthropic-ai/sdk";
 import { load } from "@std/dotenv";
-import { loginHandler, logoutHandler, authMiddleware, requireRoot, requireAppAccess } from "./auth.ts";
-import { listAppsWithCredentials, getApp } from "./db.ts";
+import { loginHandler, logoutHandler, authMiddleware, requireRoot, requireAppAccess, generateMagicLinkToken, magicLinkHandler } from "./auth.ts";
+import { listAppsWithCredentials, getApp, deleteApp, updateAppCredentials, deleteAppCredentials, getAppCredentials, updateAppTitle } from "./db.ts";
 import { generateApp, editApp } from "./generate.ts";
 import { crud } from "./crud.ts";
 import { createChatRoutes } from "./chat.ts";
@@ -27,6 +27,21 @@ type AppEnv = {
 
 const app = new Hono<AppEnv>();
 
+// Global error handler — always return JSON for API routes
+app.onError((err, c) => {
+  console.error(`[server] Unhandled error:`, err);
+  const msg = err instanceof Error ? err.message : "Internal Server Error";
+  return c.json({ error: msg }, 500);
+});
+
+// 404 handler — return JSON for API routes
+app.notFound((c) => {
+  if (c.req.path.startsWith("/api/")) {
+    return c.json({ error: "Not found" }, 404);
+  }
+  return c.text("Not Found", 404);
+});
+
 // --- Public routes ---
 app.get("/login", async (c) => {
   const html = await Deno.readTextFile("static/login.html");
@@ -35,6 +50,19 @@ app.get("/login", async (c) => {
 
 app.post("/auth/login", loginHandler);
 app.get("/auth/logout", logoutHandler);
+
+// --- Public per-app routes (no auth) ---
+app.get("/apps/:appId/magic", magicLinkHandler);
+
+app.get("/apps/:appId/login", async (c) => {
+  const appId = c.req.param("appId");
+  const record = getApp(appId);
+  const title = record?.title ?? "App";
+  let html = await Deno.readTextFile("static/app-login.html");
+  html = html.replace(/\{\{APP_ID\}\}/g, appId);
+  html = html.replace(/\{\{APP_TITLE\}\}/g, title);
+  return c.html(html);
+});
 
 // --- Dashboard: root only ---
 app.use("/dashboard", authMiddleware, requireRoot);
@@ -93,6 +121,100 @@ app.post("/api/apps/:appId/edit", authMiddleware, requireRoot, async (c) => {
     const msg = e instanceof Error ? e.message : "Edit failed";
     return c.json({ error: msg }, 500);
   }
+});
+
+// --- Root-only: delete app ---
+app.post("/api/apps/:appId/delete", authMiddleware, requireRoot, (c) => {
+  const appId = c.req.param("appId");
+  const record = getApp(appId);
+  if (!record) return c.json({ error: "App not found" }, 404);
+  try {
+    deleteApp(appId);
+    return c.json({ ok: true });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : "Delete failed";
+    return c.json({ error: msg }, 500);
+  }
+});
+
+// --- Root-only: update app metadata (title) ---
+app.post("/api/apps/:appId/title", authMiddleware, requireRoot, async (c) => {
+  const appId = c.req.param("appId");
+  const record = getApp(appId);
+  if (!record) return c.json({ error: "App not found" }, 404);
+
+  let body: { title?: string };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "Invalid JSON body" }, 400);
+  }
+
+  if (!body.title || !body.title.trim()) {
+    return c.json({ error: "title is required" }, 400);
+  }
+
+  try {
+    updateAppTitle(appId, body.title.trim());
+    return c.json({ ok: true, title: body.title.trim() });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : "Update failed";
+    return c.json({ error: msg }, 500);
+  }
+});
+
+// --- Root-only: credential management ---
+app.post("/api/apps/:appId/credentials", authMiddleware, requireRoot, async (c) => {
+  const appId = c.req.param("appId");
+  const record = getApp(appId);
+  if (!record) return c.json({ error: "App not found" }, 404);
+
+  let body: { username?: string; password?: string };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "Invalid JSON body" }, 400);
+  }
+
+  if (!body.username || !body.password) {
+    return c.json({ error: "username and password are required" }, 400);
+  }
+
+  try {
+    updateAppCredentials(appId, body.username, body.password);
+    return c.json({ ok: true, username: body.username, password: body.password });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : "Credential update failed";
+    return c.json({ error: msg }, 500);
+  }
+});
+
+app.post("/api/apps/:appId/credentials/delete", authMiddleware, requireRoot, (c) => {
+  const appId = c.req.param("appId");
+  const record = getApp(appId);
+  if (!record) return c.json({ error: "App not found" }, 404);
+  try {
+    deleteAppCredentials(appId);
+    return c.json({ ok: true });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : "Delete credentials failed";
+    return c.json({ error: msg }, 500);
+  }
+});
+
+// --- Root-only: generate magic link ---
+app.post("/api/apps/:appId/magic-link", authMiddleware, requireRoot, async (c) => {
+  const appId = c.req.param("appId");
+  const creds = getAppCredentials(appId);
+  if (!creds) {
+    return c.json({ error: "No credentials set for this app. Add credentials first." }, 400);
+  }
+
+  const token = await generateMagicLinkToken(appId, creds.username, creds.password);
+  const host = c.req.header("Host") ?? "localhost";
+  const proto = c.req.header("X-Forwarded-Proto") ?? "http";
+  const url = `${proto}://${host}/apps/${appId}/magic?token=${token}`;
+  return c.json({ url });
 });
 
 // --- Per-app routes: app access (root or matching app credential) ---

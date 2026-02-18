@@ -76,6 +76,16 @@
       font-size: 0.85rem;
       color: #888;
     }
+    .card .description {
+      font-size: 0.85rem;
+      color: #666;
+      margin-top: 0.35rem;
+      margin-bottom: 0.35rem;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
     .card .creds {
       font-size: 0.8rem;
       color: #555;
@@ -87,6 +97,82 @@
       font-family: monospace;
       word-break: break-all;
     }
+    .card-actions {
+      display: flex;
+      gap: 0.4rem;
+      margin-top: 0.6rem;
+      flex-wrap: wrap;
+    }
+    .card-actions button {
+      padding: 0.3rem 0.6rem;
+      font-size: 0.75rem;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      background: #fff;
+      cursor: pointer;
+      color: #333;
+    }
+    .card-actions button:hover { background: #f0f0f0; }
+    .card-actions .btn-danger { color: #d32f2f; border-color: #d32f2f; }
+    .card-actions .btn-danger:hover { background: #fde8e8; }
+    .card-actions .btn-primary { color: #4a90d9; border-color: #4a90d9; }
+    .card-actions .btn-primary:hover { background: #e8f0fa; }
+    .modal-overlay {
+      display: none;
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0,0,0,0.4);
+      z-index: 1000;
+      align-items: center;
+      justify-content: center;
+    }
+    .modal-overlay.open { display: flex; }
+    .modal {
+      background: #fff;
+      border-radius: 8px;
+      box-shadow: 0 8px 30px rgba(0,0,0,0.25);
+      padding: 1.5rem;
+      width: 100%;
+      max-width: 400px;
+    }
+    .modal h3 { margin-bottom: 1rem; font-size: 1.1rem; }
+    .modal label { display: block; font-size: 0.875rem; margin-bottom: 0.25rem; color: #333; }
+    .modal input {
+      width: 100%;
+      padding: 0.5rem 0.75rem;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      font-size: 0.95rem;
+      margin-bottom: 0.75rem;
+    }
+    .modal input:focus { outline: none; border-color: #4a90d9; }
+    .modal-actions { display: flex; gap: 0.5rem; justify-content: flex-end; margin-top: 0.5rem; }
+    .modal-actions button {
+      padding: 0.4rem 1rem;
+      border-radius: 4px;
+      font-size: 0.9rem;
+      cursor: pointer;
+      border: 1px solid #ccc;
+      background: #fff;
+    }
+    .modal-actions button.primary { background: #4a90d9; color: #fff; border-color: #4a90d9; }
+    .modal-actions button.primary:hover { background: #357abd; }
+    .modal-actions button.danger { background: #d32f2f; color: #fff; border-color: #d32f2f; }
+    .modal-actions button.danger:hover { background: #b71c1c; }
+    .toast {
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      background: #333;
+      color: #fff;
+      padding: 0.6rem 1.2rem;
+      border-radius: 6px;
+      font-size: 0.875rem;
+      z-index: 2000;
+      opacity: 0;
+      transition: opacity 0.3s;
+    }
+    .toast.show { opacity: 1; }
     .success-box {
       background: #e8f5e9;
       border: 1px solid #a5d6a7;
@@ -135,7 +221,32 @@
     <div class="spinner">Loading apps...</div>
   </div>
 
+  <!-- Edit App Modal -->
+  <div class="modal-overlay" id="edit-modal">
+    <div class="modal">
+      <h3>Edit App</h3>
+      <label for="edit-title">App Name</label>
+      <input type="text" id="edit-title" placeholder="App name">
+      <hr style="border:none;border-top:1px solid #e0e0e0;margin:0.75rem 0;">
+      <label for="edit-username">Username</label>
+      <input type="text" id="edit-username" placeholder="Username">
+      <label for="edit-password">Password</label>
+      <input type="text" id="edit-password" placeholder="Password">
+      <div class="modal-actions">
+        <button onclick="closeEditModal()">Cancel</button>
+        <button class="danger" id="edit-remove-creds-btn" onclick="removeCredentials()">Remove Creds</button>
+        <button class="primary" onclick="saveAppEdits()">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div class="toast" id="toast"></div>
+
   <script>
+    let currentEditAppId = null;
+    let appsById = {};
+
     async function authFetch(url, opts) {
       const res = await fetch(url, opts);
       if (res.status === 401) {
@@ -145,10 +256,120 @@
       return res;
     }
 
+    // Safely parse JSON from a response, falling back to text on parse failure
+    async function safeJson(res) {
+      const text = await res.text();
+      try {
+        return JSON.parse(text);
+      } catch {
+        throw new Error(text || `HTTP ${res.status}`);
+      }
+    }
+
     function escapeHtml(str) {
       const div = document.createElement("div");
       div.textContent = str;
       return div.innerHTML;
+    }
+
+    function showToast(msg) {
+      const t = document.getElementById("toast");
+      t.textContent = msg;
+      t.classList.add("show");
+      setTimeout(() => t.classList.remove("show"), 2500);
+    }
+
+    function openEditModal(appId) {
+      currentEditAppId = appId;
+      const app = appsById[appId];
+      document.getElementById("edit-title").value = app?.title || "";
+      document.getElementById("edit-username").value = app?.cred_username || "";
+      document.getElementById("edit-password").value = app?.cred_password || "";
+      document.getElementById("edit-remove-creds-btn").style.display = app?.cred_username ? "" : "none";
+      document.getElementById("edit-modal").classList.add("open");
+    }
+
+    function closeEditModal() {
+      document.getElementById("edit-modal").classList.remove("open");
+      currentEditAppId = null;
+    }
+
+    async function saveAppEdits() {
+      const title = document.getElementById("edit-title").value.trim();
+      const username = document.getElementById("edit-username").value.trim();
+      const password = document.getElementById("edit-password").value.trim();
+      const appId = currentEditAppId;
+
+      if (!title) { showToast("App name is required"); return; }
+
+      try {
+        // Save title
+        const app = appsById[appId];
+        if (title !== app?.title) {
+          const res = await authFetch(`/api/apps/${appId}/title`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ title }),
+          });
+          if (!res.ok) { const d = await safeJson(res); throw new Error(d.error); }
+        }
+
+        // Save credentials if both provided, or skip if both empty
+        if (username && password) {
+          const res = await authFetch(`/api/apps/${appId}/credentials`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ username, password }),
+          });
+          if (!res.ok) { const d = await safeJson(res); throw new Error(d.error); }
+        } else if (!username && !password && app?.cred_username) {
+          // Both cleared — remove credentials
+          const res = await authFetch(`/api/apps/${appId}/credentials/delete`, { method: "POST" });
+          if (!res.ok) { const d = await safeJson(res); throw new Error(d.error); }
+        } else if ((username && !password) || (!username && password)) {
+          showToast("Both username and password are required, or clear both to remove");
+          return;
+        }
+
+        showToast("App updated");
+        closeEditModal();
+        loadApps();
+      } catch (e) { showToast("Error: " + e.message); }
+    }
+
+    async function removeCredentials() {
+      if (!confirm("Remove credentials? Users will no longer be able to log in to this app.")) return;
+      try {
+        const res = await authFetch(`/api/apps/${currentEditAppId}/credentials/delete`, { method: "POST" });
+        if (!res.ok) { const d = await safeJson(res); throw new Error(d.error); }
+        showToast("Credentials removed");
+        closeEditModal();
+        loadApps();
+      } catch (e) { showToast("Error: " + e.message); }
+    }
+
+    async function deleteAppAction(appId) {
+      const title = appsById[appId]?.title || "this app";
+      if (!confirm(`Delete "${title}"? This will permanently remove the app and all its data.`)) return;
+      try {
+        const res = await authFetch(`/api/apps/${appId}/delete`, { method: "POST" });
+        if (!res.ok) { const d = await safeJson(res); throw new Error(d.error); }
+        showToast("App deleted");
+        loadApps();
+      } catch (e) { showToast("Error: " + e.message); }
+    }
+
+    async function copyMagicLink(appId) {
+      try {
+        const res = await authFetch(`/api/apps/${appId}/magic-link`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+        });
+        if (!res.ok) { const d = await safeJson(res); throw new Error(d.error); }
+        const data = await safeJson(res);
+        await navigator.clipboard.writeText(data.url);
+        showToast("Magic link copied to clipboard!");
+      } catch (e) { showToast("Error: " + e.message); }
     }
 
     async function loadApps() {
@@ -156,23 +377,38 @@
       try {
         const res = await authFetch("/api/apps");
         if (!res.ok) {
-          const data = await res.json();
+          const data = await safeJson(res);
           throw new Error(data.error || "Failed to load apps");
         }
-        const apps = await res.json();
+        const apps = await safeJson(res);
 
         if (apps.length === 0) {
           container.innerHTML = '<div class="empty">No apps yet. Generate one above.</div>';
           return;
         }
 
-        container.innerHTML = '<div class="grid">' + apps.map(a =>
-          `<a class="card" href="/apps/${a.id}">
-            <h3>${escapeHtml(a.title)}</h3>
-            <div class="meta">${escapeHtml(a.created_at)}</div>
-            ${a.cred_username ? `<div class="creds">User: ${escapeHtml(a.cred_username)}<br>Pass: ${escapeHtml(a.cred_password)}</div>` : ''}
-          </a>`
-        ).join("") + '</div>';
+        appsById = {};
+        apps.forEach(a => { appsById[a.id] = a; });
+
+        container.innerHTML = '<div class="grid">' + apps.map(a => {
+          const desc = a.description ? `<div class="description">${escapeHtml(a.description)}</div>` : '';
+          const creds = a.cred_username
+            ? `<div class="creds">User: ${escapeHtml(a.cred_username)}<br>Pass: ${escapeHtml(a.cred_password)}</div>`
+            : '';
+          return `<div class="card">
+            <a href="/apps/${a.id}" style="text-decoration:none;color:inherit;">
+              <h3>${escapeHtml(a.title)}</h3>
+              <div class="meta">${escapeHtml(a.created_at)}</div>
+              ${desc}
+              ${creds}
+            </a>
+            <div class="card-actions">
+              <button class="btn-primary" data-action="edit" data-id="${a.id}">Edit</button>
+              ${a.cred_username ? `<button class="btn-primary" data-action="magic" data-id="${a.id}">Copy Magic Link</button>` : ''}
+              <button class="btn-danger" data-action="delete" data-id="${a.id}">Delete</button>
+            </div>
+          </div>`;
+        }).join("") + '</div>';
       } catch (e) {
         if (e.message !== "Unauthorized") {
           container.innerHTML = `<div class="error">${escapeHtml(e.message)}</div>`;
@@ -203,10 +439,10 @@
           body: JSON.stringify({ title: title || undefined, body }),
         });
         if (!res.ok) {
-          const data = await res.json();
+          const data = await safeJson(res);
           throw new Error(data.error || "Generation failed");
         }
-        const data = await res.json();
+        const data = await safeJson(res);
         const { appId, credentials } = data;
         btn.disabled = false;
         status.className = "generate-status";
@@ -223,6 +459,25 @@
         status.textContent = e.message;
         status.className = "generate-status error";
         btn.disabled = false;
+      }
+    });
+
+    // Close modal on overlay click
+    document.getElementById("edit-modal").addEventListener("click", (e) => {
+      if (e.target === e.currentTarget) closeEditModal();
+    });
+
+    // Event delegation for card action buttons
+    document.getElementById("content").addEventListener("click", (e) => {
+      const btn = e.target.closest("[data-action]");
+      if (!btn) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const id = btn.dataset.id;
+      switch (btn.dataset.action) {
+        case "edit": openEditModal(id); break;
+        case "magic": copyMagicLink(id); break;
+        case "delete": deleteAppAction(id); break;
       }
     });
 

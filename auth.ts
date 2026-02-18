@@ -1,7 +1,7 @@
 import { sign, verify } from "@hono/hono/jwt";
 import { getCookie, setCookie, deleteCookie } from "@hono/hono/cookie";
 import type { Context, Next } from "@hono/hono";
-import { getAppCredentialsByUsername } from "./db.ts";
+import { getAppCredentialsByUsername, getAppCredentials } from "./db.ts";
 
 const COOKIE_NAME = "auth_token";
 
@@ -118,9 +118,82 @@ export async function requireAppAccess(c: Context, next: Next): Promise<Response
   return c.json({ error: "Forbidden: you do not have access to this app" }, 403);
 }
 
+export async function generateMagicLinkToken(
+  appId: string,
+  username: string,
+  password: string,
+): Promise<string> {
+  return await sign(
+    {
+      sub: username,
+      role: "app",
+      appId,
+      username,
+      password,
+      type: "magic",
+      exp: Math.floor(Date.now() / 1000) + 7 * 86400, // 7 days
+    },
+    getSecret(),
+  );
+}
+
+export async function magicLinkHandler(c: Context): Promise<Response> {
+  const appId = c.req.param("appId");
+  const token = c.req.query("token");
+
+  if (!token) {
+    return c.redirect(`/apps/${appId}/login`);
+  }
+
+  try {
+    const payload = await verify(token, getSecret(), "HS256");
+
+    if (payload.type !== "magic" || payload.appId !== appId) {
+      return c.redirect(`/apps/${appId}/login`);
+    }
+
+    // Verify credentials still match DB
+    const creds = getAppCredentials(appId);
+    if (
+      !creds ||
+      creds.username !== payload.username ||
+      creds.password !== payload.password
+    ) {
+      return c.redirect(`/apps/${appId}/login`);
+    }
+
+    // Issue a standard 24h session cookie
+    const sessionToken = await sign(
+      {
+        sub: creds.username,
+        role: "app",
+        appId,
+        exp: Math.floor(Date.now() / 1000) + 86400,
+      },
+      getSecret(),
+    );
+
+    setCookie(c, COOKIE_NAME, sessionToken, {
+      httpOnly: true,
+      sameSite: "Lax",
+      path: "/",
+      maxAge: 86400,
+    });
+
+    return c.redirect(`/apps/${appId}`);
+  } catch {
+    return c.redirect(`/apps/${appId}/login`);
+  }
+}
+
 function authFail(c: Context): Response {
   const accept = c.req.header("Accept") ?? "";
   if (accept.includes("text/html") && !c.req.path.startsWith("/api/")) {
+    // Redirect to per-app login if accessing an app route
+    const appMatch = c.req.path.match(/^\/apps\/([^/]+)/);
+    if (appMatch) {
+      return c.redirect(`/apps/${appMatch[1]}/login`);
+    }
     return c.redirect("/login");
   }
   return c.json({ error: "Unauthorized" }, 401);

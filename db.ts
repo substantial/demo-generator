@@ -1,9 +1,17 @@
 import { Database } from "@db/sqlite";
 
-const db = new Database("data.db");
+const dbPath = Deno.env.get("DATABASE_PATH") || "data.db";
+const db = new Database(dbPath);
 
 // Enable WAL mode for better concurrency
 db.exec("PRAGMA journal_mode=WAL");
+
+// Migration: add description column (idempotent)
+try {
+  db.exec(`ALTER TABLE apps ADD COLUMN description TEXT DEFAULT ''`);
+} catch {
+  // Column already exists
+}
 
 // Create meta tables
 db.exec(`
@@ -91,9 +99,52 @@ export function getAppCredentials(
   return row ?? null;
 }
 
+export function updateAppCredentials(
+  appId: string,
+  username: string,
+  password: string,
+): void {
+  db.exec(`DELETE FROM app_credentials WHERE app_id = ?`, [appId]);
+  db.exec(
+    `INSERT INTO app_credentials (app_id, username, password) VALUES (?, ?, ?)`,
+    [appId, username, password],
+  );
+}
+
+export function deleteAppCredentials(appId: string): void {
+  db.exec(`DELETE FROM app_credentials WHERE app_id = ?`, [appId]);
+}
+
+export function deleteApp(appId: string): void {
+  // Find dynamic tables for this app
+  const schemas = db
+    .prepare("SELECT table_name FROM app_schemas WHERE app_id = ?")
+    .all(appId) as { table_name: string }[];
+
+  // Drop dynamic tables
+  for (const schema of schemas) {
+    const ftn = fullTableName(appId, schema.table_name);
+    db.exec(`DROP TABLE IF EXISTS "${ftn}"`);
+  }
+
+  // Delete from meta tables
+  db.exec(`DELETE FROM app_schemas WHERE app_id = ?`, [appId]);
+  db.exec(`DELETE FROM app_credentials WHERE app_id = ?`, [appId]);
+  // Delete conversations and messages for this app
+  const convos = db
+    .prepare("SELECT id FROM conversations WHERE app_id = ?")
+    .all(appId) as { id: string }[];
+  for (const conv of convos) {
+    db.exec(`DELETE FROM messages WHERE conversation_id = ?`, [conv.id]);
+  }
+  db.exec(`DELETE FROM conversations WHERE app_id = ?`, [appId]);
+  db.exec(`DELETE FROM apps WHERE id = ?`, [appId]);
+}
+
 export function listAppsWithCredentials(): {
   id: string;
   title: string;
+  description: string;
   github_issue_url: string;
   created_at: string;
   cred_username: string | null;
@@ -101,7 +152,7 @@ export function listAppsWithCredentials(): {
 }[] {
   return db
     .prepare(
-      `SELECT a.id, a.title, a.github_issue_url, a.created_at,
+      `SELECT a.id, a.title, a.description, a.github_issue_url, a.created_at,
               ac.username AS cred_username, ac.password AS cred_password
        FROM apps a
        LEFT JOIN app_credentials ac ON a.id = ac.app_id
@@ -110,6 +161,7 @@ export function listAppsWithCredentials(): {
     .all() as {
     id: string;
     title: string;
+    description: string;
     github_issue_url: string;
     created_at: string;
     cred_username: string | null;
@@ -374,10 +426,11 @@ export function saveApp(
   issueUrl: string,
   title: string,
   html: string,
+  description?: string,
 ): void {
   db.exec(
-    `INSERT INTO apps (id, github_issue_url, title, html) VALUES (?, ?, ?, ?)`,
-    [id, issueUrl, title, html],
+    `INSERT INTO apps (id, github_issue_url, title, html, description) VALUES (?, ?, ?, ?, ?)`,
+    [id, issueUrl, title, html, description ?? ""],
   );
 }
 
@@ -388,6 +441,7 @@ export function getApp(
   github_issue_url: string;
   title: string;
   html: string;
+  description: string;
   created_at: string;
   updated_at: string;
 } | null {
@@ -400,6 +454,7 @@ export function getApp(
         github_issue_url: string;
         title: string;
         html: string;
+        description: string;
         created_at: string;
         updated_at: string;
       })
@@ -422,6 +477,13 @@ export function listApps(): {
     github_issue_url: string;
     created_at: string;
   }[];
+}
+
+export function updateAppTitle(appId: string, title: string): void {
+  db.exec(
+    `UPDATE apps SET title = ?, updated_at = datetime('now') WHERE id = ?`,
+    [title, appId],
+  );
 }
 
 export function updateAppHtml(appId: string, html: string): void {
