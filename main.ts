@@ -1,11 +1,14 @@
 import { Hono } from "@hono/hono";
 import Anthropic from "@anthropic-ai/sdk";
 import { load } from "@std/dotenv";
+import { verify } from "@hono/hono/jwt";
+import { getCookie } from "@hono/hono/cookie";
 import { loginHandler, logoutHandler, authMiddleware, requireRoot, requireAppAccess, generateMagicLinkToken, magicLinkHandler } from "./auth.ts";
-import { listAppsWithCredentials, getApp, deleteApp, updateAppCredentials, deleteAppCredentials, getAppCredentials, updateAppTitle } from "./db.ts";
-import { generateApp, editApp } from "./generate.ts";
+import { listAppsWithCredentials, getApp, deleteApp, updateAppCredentials, deleteAppCredentials, getAppCredentials, updateAppTitle, saveEditRequest, listEditRequests, listAllEditRequests, deleteEditRequest, saveUxLesson, listUxLessons, deleteUxLesson } from "./db.ts";
+import { generateApp, editApp, extractUxLesson } from "./generate.ts";
 import { crud } from "./crud.ts";
 import { createChatRoutes } from "./chat.ts";
+import { createAgentRoutes } from "./agents.ts";
 
 // Load environment variables from .env file
 const env = await load();
@@ -56,6 +59,8 @@ app.get("/apps/:appId/magic", magicLinkHandler);
 
 app.get("/apps/:appId/login", async (c) => {
   const appId = c.req.param("appId");
+  const creds = getAppCredentials(appId);
+  if (!creds) return c.redirect(`/apps/${appId}`);
   const record = getApp(appId);
   const title = record?.title ?? "App";
   let html = await Deno.readTextFile("static/app-login.html");
@@ -71,6 +76,14 @@ app.get("/", (c) => c.redirect("/dashboard"));
 
 app.get("/dashboard", async (c) => {
   const html = await Deno.readTextFile("static/dashboard.html");
+  return c.html(html);
+});
+
+// --- Dashboard app detail page: root only ---
+app.use("/dashboard/apps/*", authMiddleware, requireRoot);
+
+app.get("/dashboard/apps/:appId", async (c) => {
+  const html = await Deno.readTextFile("static/app-detail.html");
   return c.html(html);
 });
 
@@ -101,7 +114,7 @@ app.post("/api/apps", authMiddleware, requireRoot, async (c) => {
   }
 });
 
-app.post("/api/apps/:appId/edit", authMiddleware, requireRoot, async (c) => {
+app.post("/api/apps/:appId/edit", authMiddleware, requireAppAccess, async (c) => {
   const appId = c.req.param("appId");
   let body: { description?: string };
   try {
@@ -114,13 +127,101 @@ app.post("/api/apps/:appId/edit", authMiddleware, requireRoot, async (c) => {
     return c.json({ error: "description is required" }, 400);
   }
 
+  const role = c.get("role");
+
+  // Non-root users: save the request for tracking, then execute the edit
+  if (role !== "root") {
+    const username = c.get("user") || "unknown";
+    saveEditRequest(appId, username, body.description);
+  }
+
+  // Execute the edit for all users
   try {
     await editApp(appId, body.description, client);
+
+    // Fire-and-forget: extract UX lesson from this edit
+    extractUxLesson(body.description, client).then((lesson) => {
+      if (lesson) {
+        saveUxLesson(lesson, appId, body.description);
+        console.log(`[ux-lessons] Learned: "${lesson}"`);
+      }
+    }).catch(() => {});
+
     return c.json({ ok: true, updated: "app" });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : "Edit failed";
     return c.json({ error: msg }, 500);
   }
+});
+
+// --- Root-only: view edit requests ---
+app.get("/api/apps/:appId/edit-requests", authMiddleware, requireRoot, (c) => {
+  const appId = c.req.param("appId");
+  return c.json(listEditRequests(appId));
+});
+
+app.get("/api/edit-requests", authMiddleware, requireRoot, (c) => {
+  return c.json(listAllEditRequests());
+});
+
+app.post("/api/apps/:appId/edit-requests/:requestId/delete", authMiddleware, requireRoot, (c) => {
+  const requestId = parseInt(c.req.param("requestId"), 10);
+  if (isNaN(requestId)) return c.json({ error: "Invalid request ID" }, 400);
+  deleteEditRequest(requestId);
+  return c.json({ ok: true });
+});
+
+// --- Root-only: AI summary of edit requests ---
+app.post("/api/apps/:appId/edit-requests/summary", authMiddleware, requireRoot, async (c) => {
+  const appId = c.req.param("appId");
+  const record = getApp(appId);
+  if (!record) return c.json({ error: "App not found" }, 404);
+
+  const requests = listEditRequests(appId);
+  if (requests.length === 0) {
+    return c.json({ summary: "No edit requests to analyze." });
+  }
+
+  const requestList = requests.map((r, i) =>
+    `${i + 1}. [${r.username}, ${r.created_at}] ${r.description}`
+  ).join("\n");
+
+  const message = await client.messages.create({
+    model: "claude-opus-4-6",
+    max_tokens: 1024,
+    messages: [{
+      role: "user",
+      content: `You are analyzing edit requests from users of a demo app called "${record.title}". These users are prospects evaluating our platform.
+
+Here are all the edit requests:
+
+${requestList}
+
+Analyze these requests to help us understand this prospect:
+
+1. **Features & Capabilities** — What features/capabilities is this prospect looking for? What do they need the app to do?
+2. **UX Friction** — What UX patterns are causing friction? What expectations aren't being met?
+3. **Prospect Needs** — What does this tell us about the prospect's business needs and whether they'd convert to a paying customer?
+4. **Actionable Recommendations** — What should our product team prioritize based on this feedback?
+
+Be concise and actionable. Use bullet points and markdown formatting.`,
+    }],
+  });
+
+  const summary = message.content[0].type === "text" ? message.content[0].text : "Unable to generate summary.";
+  return c.json({ summary });
+});
+
+// --- Root-only: UX lessons management ---
+app.get("/api/ux-lessons", authMiddleware, requireRoot, (c) => {
+  return c.json(listUxLessons());
+});
+
+app.post("/api/ux-lessons/:id/delete", authMiddleware, requireRoot, (c) => {
+  const id = parseInt(c.req.param("id"), 10);
+  if (isNaN(id)) return c.json({ error: "Invalid lesson ID" }, 400);
+  deleteUxLesson(id);
+  return c.json({ ok: true });
 });
 
 // --- Root-only: delete app ---
@@ -217,13 +318,42 @@ app.post("/api/apps/:appId/magic-link", authMiddleware, requireRoot, async (c) =
   return c.json({ url });
 });
 
-// --- Per-app routes: app access (root or matching app credential) ---
-app.use("/apps/:appId", authMiddleware, requireAppAccess);
-app.use("/api/apps/:appId/tables/*", authMiddleware, requireAppAccess);
-app.use("/api/apps/:appId/chat", authMiddleware, requireAppAccess);
-app.use("/api/apps/:appId/conversations/*", authMiddleware, requireAppAccess);
-app.use("/api/apps/:appId/conversations", authMiddleware, requireAppAccess);
-app.use("/api/apps/:appId/ai/*", authMiddleware, requireAppAccess);
+// --- Per-app routes: open if no credentials, otherwise require auth ---
+import type { Context, Next } from "@hono/hono";
+
+const openOrAuth = async (c: Context, next: Next) => {
+  const appId = c.req.param("appId");
+  if (!appId) { await next(); return; }
+  const creds = getAppCredentials(appId);
+  if (!creds) { await next(); return; }
+
+  const token = getCookie(c, "auth_token");
+  if (!token) return c.json({ error: "Unauthorized" }, 401);
+  try {
+    const secret = Deno.env.get("JWT_SECRET") ?? "";
+    const payload = await verify(token, secret, "HS256");
+    c.set("user", payload.sub as string);
+    c.set("role", payload.role as string);
+    if (payload.appId) c.set("appId", payload.appId as string);
+    if (payload.role === "root") { await next(); return; }
+    if (payload.role === "app" && payload.appId === appId) { await next(); return; }
+    return c.json({ error: "Forbidden" }, 403);
+  } catch {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+};
+
+app.use("/api/apps/:appId/tables/*", openOrAuth);
+app.use("/api/apps/:appId/chat", openOrAuth);
+app.use("/api/apps/:appId/conversations/*", openOrAuth);
+app.use("/api/apps/:appId/conversations", openOrAuth);
+app.use("/api/apps/:appId/ai/*", openOrAuth);
+app.use("/api/apps/:appId/agents/*", openOrAuth);
+app.use("/api/apps/:appId/agents", openOrAuth);
+app.use("/api/apps/:appId/guidelines/*", openOrAuth);
+app.use("/api/apps/:appId/guidelines", openOrAuth);
+app.use("/api/apps/:appId/mcp-servers/*", openOrAuth);
+app.use("/api/apps/:appId/mcp-servers", openOrAuth);
 
 // --- Models endpoint: any authenticated user ---
 app.use("/api/models", authMiddleware);
@@ -231,20 +361,54 @@ app.use("/api/models", authMiddleware);
 // --- LLM chat routes (structured conversations + stateless) ---
 app.route("/", createChatRoutes(client));
 
+// --- Agent routes ---
+app.route("/", createAgentRoutes(client));
+
 // --- CRUD routes ---
 app.route("/", crud);
 
 // --- Serve generated apps ---
-app.get("/apps/:appId", (c) => {
+app.get("/apps/:appId", async (c) => {
   const appId = c.req.param("appId");
   const record = getApp(appId);
   if (!record) return c.json({ error: "App not found" }, 404);
 
-  const role = c.get("role");
+  const creds = getAppCredentials(appId);
 
-  // Only inject chat widget for root users
-  if (role === "root") {
-    const chatWidget = `
+  // No credentials → serve directly to anyone (open access, no widget)
+  if (!creds) {
+    return c.html(record.html);
+  }
+
+  // Has credentials → try to authenticate via JWT cookie
+  let role: string | undefined;
+  let tokenAppId: string | undefined;
+  const token = getCookie(c, "auth_token");
+  if (token) {
+    try {
+      const secret = Deno.env.get("JWT_SECRET") ?? "";
+      const payload = await verify(token, secret, "HS256");
+      role = payload.role as string;
+      tokenAppId = payload.appId as string | undefined;
+    } catch {
+      // Invalid/expired token — treat as unauthenticated
+    }
+  }
+
+  // Check access: root or matching app user
+  const hasAccess = role === "root" || (role === "app" && tokenAppId === appId);
+
+  if (!hasAccess) {
+    return c.redirect(`/apps/${appId}/login`);
+  }
+
+  const isRoot = role === "root";
+  const headerText = isRoot ? 'Edit this app' : 'Suggest changes';
+  const systemMsg = isRoot
+    ? "Describe changes you'd like to make to this app."
+    : 'Suggest changes to this app. Your ideas will be saved for review.';
+  const successMsg = 'Changes applied! Refresh the page to see changes.';
+  const chatWidget = `
 <style>
 #__chat_toggle{position:fixed;bottom:20px;right:20px;z-index:9999;width:52px;height:52px;border-radius:50%;background:#4a90d9;color:#fff;border:none;font-size:1.4rem;cursor:pointer;box-shadow:0 2px 12px rgba(0,0,0,0.3);display:flex;align-items:center;justify-content:center;transition:transform .15s}
 #__chat_toggle:hover{transform:scale(1.08)}
@@ -274,18 +438,18 @@ app.get("/apps/:appId", (c) => {
 </style>
 <div id="__chat_panel">
   <div id="__chat_header">
-    <span>Edit this app</span>
+    <span>${headerText}</span>
     <button onclick="document.getElementById('__chat_panel').classList.remove('open')" title="Close">&times;</button>
   </div>
   <div id="__chat_messages">
-    <div class="__chat_msg system">Describe changes you'd like to make to this app.</div>
+    <div class="__chat_msg system">${systemMsg}</div>
   </div>
   <div id="__chat_input_area">
-    <textarea id="__chat_input" rows="1" placeholder="Describe a change..."></textarea>
+    <textarea id="__chat_input" rows="1" placeholder="${isRoot ? 'Describe a change...' : 'Suggest a change...'}"></textarea>
     <button id="__chat_send" title="Send">&#9654;</button>
   </div>
 </div>
-<button id="__chat_toggle" title="Edit this app">&#9998;</button>
+<button id="__chat_toggle" title="${headerText}">&#9998;</button>
 <script>
 (function(){
   const panel=document.getElementById('__chat_panel');
@@ -348,7 +512,7 @@ app.get("/apps/:appId", (c) => {
         const data=await res.json();
         throw new Error(data.error||'Edit failed');
       }
-      addMsg('Changes applied! Reloading...','assistant');
+      addMsg('${successMsg}','assistant');
       setTimeout(()=>window.location.reload(),1500);
     }catch(e){
       hideTyping();
@@ -370,15 +534,11 @@ app.get("/apps/:appId", (c) => {
 })();
 </script>`;
 
-    const html = record.html.replace(
-      /<\/body>/i,
-      chatWidget + "\n</body>",
-    );
-    return c.html(html);
-  }
-
-  // App users: serve without edit widget
-  return c.html(record.html);
+  const html = record.html.replace(
+    /<\/body>/i,
+    chatWidget + "\n</body>",
+  );
+  return c.html(html);
 });
 
 Deno.serve({ port: 8000, hostname: "0.0.0.0" }, app.fetch);

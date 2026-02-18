@@ -9,6 +9,7 @@ import {
   addColumnToTable,
   insertRow,
   getFullTableName,
+  listUxLessons,
   type TableDef,
   type ColumnDef,
 } from "./db.ts";
@@ -137,6 +138,50 @@ function renderLLMResponse(container, text) {
 - Do NOT just dump response.content as innerHTML or textContent — always parse for chart blocks
 - The LLM will produce \`\`\`chartjs blocks when asked for visualizations — your app must render them
 
+AGENT SYSTEM — define reusable AI agents with prompts, guidelines, and MCP tools:
+
+AGENTS CRUD:
+POST   /api/apps/{{APP_ID}}/agents                    → { name, static_prompt, model?, temperature? } → { id, ... }
+GET    /api/apps/{{APP_ID}}/agents                    → [{ id, name, static_prompt, model, ... }]
+GET    /api/apps/{{APP_ID}}/agents/{agentId}           → { id, name, static_prompt, ..., guidelines: [...], mcp_servers: [...] }
+POST   /api/apps/{{APP_ID}}/agents/{agentId}           → update { name?, static_prompt?, model?, temperature? }
+POST   /api/apps/{{APP_ID}}/agents/{agentId}/delete    → { ok: true }
+
+GUIDELINES CRUD (voice/style guidelines, linkable to agents many-to-many):
+POST   /api/apps/{{APP_ID}}/guidelines                → { name, content } → { id, ... }
+GET    /api/apps/{{APP_ID}}/guidelines                → [{ id, name, content, ... }]
+POST   /api/apps/{{APP_ID}}/guidelines/{id}            → update { name?, content? }
+POST   /api/apps/{{APP_ID}}/guidelines/{id}/delete     → { ok: true }
+
+MCP SERVERS (external tool servers, linkable to agents many-to-many):
+POST   /api/apps/{{APP_ID}}/mcp-servers               → { name, url, api_key? } → { id, ... }
+GET    /api/apps/{{APP_ID}}/mcp-servers               → [{ id, name, url, ... }]
+POST   /api/apps/{{APP_ID}}/mcp-servers/{id}           → update { name?, url?, api_key? }
+POST   /api/apps/{{APP_ID}}/mcp-servers/{id}/delete    → { ok: true }
+
+LINKING (many-to-many):
+POST   /api/apps/{{APP_ID}}/agents/{agentId}/guidelines        → { guideline_id } (link)
+POST   /api/apps/{{APP_ID}}/agents/{agentId}/guidelines/delete → { guideline_id } (unlink)
+GET    /api/apps/{{APP_ID}}/agents/{agentId}/guidelines        → linked guidelines
+POST   /api/apps/{{APP_ID}}/agents/{agentId}/mcp-servers        → { mcp_server_id } (link)
+POST   /api/apps/{{APP_ID}}/agents/{agentId}/mcp-servers/delete → { mcp_server_id } (unlink)
+GET    /api/apps/{{APP_ID}}/agents/{agentId}/mcp-servers        → linked MCP servers
+
+AGENT INVOCATION:
+1) Stateless (one-shot — agent uses its prompt + guidelines + tools to handle a single task):
+   POST /api/apps/{{APP_ID}}/agents/{agentId}/invoke
+   Request:  { prompt: "user task" }
+   Response: { role: "assistant", content: "...", tool_calls_made: 0 }
+
+2) Persistent conversations (agent-scoped chat with history):
+   POST /api/apps/{{APP_ID}}/agents/{agentId}/conversations           → create { title? }
+   GET  /api/apps/{{APP_ID}}/agents/{agentId}/conversations           → list
+   POST /api/apps/{{APP_ID}}/agents/{agentId}/conversations/{id}/messages → send message { content: "..." }
+   (Same response format as regular chat conversations)
+
+The agent's system prompt is: static_prompt + all linked guidelines' content + app data context.
+If MCP servers are linked, the agent can call external tools automatically (tool use loop).
+
 LOGOS & AVATARS:
 - For logos: https://ui-avatars.com/api/?name=CompanyName&size=128&background=random`;
 
@@ -162,6 +207,35 @@ Your ENTIRE response must be a single valid JSON object. No code fences, no surr
 - Use {{APP_ID}} placeholder in API URLs
 - Preserve existing functionality unless the edit changes it
 - May use CDN imports from esm.sh, jsdelivr, unpkg`;
+
+export async function extractUxLesson(
+  editDescription: string,
+  client: Anthropic,
+): Promise<string | null> {
+  const response = await client.messages.create({
+    model: "claude-opus-4-6",
+    max_tokens: 200,
+    messages: [
+      {
+        role: "user",
+        content: `A user of a generated web app requested this change: "${editDescription}". Extract a concise, generalizable UX rule that should apply to ALL future generated apps. Focus on what the generator should do differently. Return ONLY the rule, one sentence, no preamble. If this is too app-specific to generalize, return NONE.`,
+      },
+    ],
+  });
+
+  const block = response.content[0];
+  if (block.type !== "text") return null;
+  const text = block.text.trim();
+  if (text === "NONE" || text.startsWith("NONE")) return null;
+  return text;
+}
+
+function buildUxLessonsBlock(): string {
+  const lessons = listUxLessons();
+  if (lessons.length === 0) return "";
+  const lines = lessons.map((l) => `- ${l.lesson}`).join("\n");
+  return `\n\nUX RULES — LEARNED FROM PAST USER FEEDBACK (MUST follow these):\n${lines}`;
+}
 
 function stripCodeFences(text: string): string {
   return text.replace(/^```(?:json)?\s*\n?/, "").replace(/\n?```\s*$/, "");
@@ -546,15 +620,21 @@ export async function generateApp(
     `[generate] Manual input: "${title}" (${body.length} chars)`,
   );
 
+  const uxLessonsBlock = buildUxLessonsBlock();
+  const systemPrompt = SYSTEM_PROMPT + uxLessonsBlock;
+
   console.log(
-    `[generate] Sending streaming request to Claude (model: claude-sonnet-4-5-20250929, max_tokens: 64000)...`,
+    `[generate] Sending streaming request to Claude (model: claude-opus-4-6, max_tokens: 64000)...`,
   );
+  if (uxLessonsBlock) {
+    console.log(`[generate] Injecting ${listUxLessons().length} UX lesson(s) into system prompt`);
+  }
   const startTime = Date.now();
 
   const stream = client.messages.stream({
-    model: "claude-sonnet-4-5-20250929",
+    model: "claude-opus-4-6",
     max_tokens: 64000,
-    system: SYSTEM_PROMPT,
+    system: systemPrompt,
     messages: [
       {
         role: "user",
@@ -655,13 +735,19 @@ export async function editApp(
     )
     .join("\n");
 
+  const uxLessonsBlock = buildUxLessonsBlock();
+  const editSystemPrompt = EDIT_SYSTEM_PROMPT + uxLessonsBlock;
+
   console.log(`[generate] Sending streaming edit request to Claude...`);
+  if (uxLessonsBlock) {
+    console.log(`[generate] Injecting UX lessons into edit system prompt`);
+  }
   const startTime = Date.now();
 
   const stream = client.messages.stream({
-    model: "claude-sonnet-4-5-20250929",
+    model: "claude-opus-4-6",
     max_tokens: 64000,
-    system: EDIT_SYSTEM_PROMPT,
+    system: editSystemPrompt,
     messages: [
       {
         role: "user",

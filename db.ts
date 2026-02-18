@@ -59,6 +59,88 @@ db.exec(`
   )
 `);
 
+// Agent system tables
+db.exec(`
+  CREATE TABLE IF NOT EXISTS agents (
+    id TEXT PRIMARY KEY,
+    app_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    static_prompt TEXT NOT NULL DEFAULT '',
+    model TEXT NOT NULL DEFAULT 'sonnet',
+    temperature REAL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS guidelines (
+    id TEXT PRIMARY KEY,
+    app_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    content TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS agent_guidelines (
+    agent_id TEXT NOT NULL,
+    guideline_id TEXT NOT NULL,
+    PRIMARY KEY (agent_id, guideline_id)
+  )
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS mcp_servers (
+    id TEXT PRIMARY KEY,
+    app_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    url TEXT NOT NULL,
+    api_key TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS agent_mcp_servers (
+    agent_id TEXT NOT NULL,
+    mcp_server_id TEXT NOT NULL,
+    PRIMARY KEY (agent_id, mcp_server_id)
+  )
+`);
+
+// Migration: add agent_id column to conversations (nullable for backward compat)
+try {
+  db.exec(`ALTER TABLE conversations ADD COLUMN agent_id TEXT`);
+} catch {
+  // Column already exists
+}
+
+// UX lessons learned from edit requests
+db.exec(`
+  CREATE TABLE IF NOT EXISTS ux_lessons (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    lesson TEXT NOT NULL,
+    source_app_id TEXT,
+    source_edit_description TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )
+`);
+
+// Edit requests from non-root users
+db.exec(`
+  CREATE TABLE IF NOT EXISTS edit_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    app_id TEXT NOT NULL,
+    username TEXT NOT NULL,
+    description TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )
+`);
+
 // App credentials for per-app auth
 db.exec(`
   CREATE TABLE IF NOT EXISTS app_credentials (
@@ -85,8 +167,12 @@ export function getAppCredentialsByUsername(
   username: string,
 ): { app_id: string; username: string; password: string } | null {
   const row = db
-    .prepare("SELECT app_id, username, password FROM app_credentials WHERE username = ?")
-    .get(username) as { app_id: string; username: string; password: string } | undefined;
+    .prepare(
+      "SELECT app_id, username, password FROM app_credentials WHERE username = ?",
+    )
+    .get(username) as
+    | { app_id: string; username: string; password: string }
+    | undefined;
   return row ?? null;
 }
 
@@ -138,6 +224,33 @@ export function deleteApp(appId: string): void {
     db.exec(`DELETE FROM messages WHERE conversation_id = ?`, [conv.id]);
   }
   db.exec(`DELETE FROM conversations WHERE app_id = ?`, [appId]);
+
+  // Delete agent system data for this app
+  const agentIds = db
+    .prepare("SELECT id FROM agents WHERE app_id = ?")
+    .all(appId) as { id: string }[];
+  for (const agent of agentIds) {
+    db.exec(`DELETE FROM agent_guidelines WHERE agent_id = ?`, [agent.id]);
+    db.exec(`DELETE FROM agent_mcp_servers WHERE agent_id = ?`, [agent.id]);
+  }
+  db.exec(`DELETE FROM agents WHERE app_id = ?`, [appId]);
+
+  const guidelineIds = db
+    .prepare("SELECT id FROM guidelines WHERE app_id = ?")
+    .all(appId) as { id: string }[];
+  for (const g of guidelineIds) {
+    db.exec(`DELETE FROM agent_guidelines WHERE guideline_id = ?`, [g.id]);
+  }
+  db.exec(`DELETE FROM guidelines WHERE app_id = ?`, [appId]);
+
+  const mcpServerIds = db
+    .prepare("SELECT id FROM mcp_servers WHERE app_id = ?")
+    .all(appId) as { id: string }[];
+  for (const s of mcpServerIds) {
+    db.exec(`DELETE FROM agent_mcp_servers WHERE mcp_server_id = ?`, [s.id]);
+  }
+  db.exec(`DELETE FROM mcp_servers WHERE app_id = ?`, [appId]);
+
   db.exec(`DELETE FROM apps WHERE id = ?`, [appId]);
 }
 
@@ -180,7 +293,14 @@ export function createConversation(
 ): void {
   db.exec(
     `INSERT INTO conversations (id, app_id, title, system_prompt, model, temperature) VALUES (?, ?, ?, ?, ?, ?)`,
-    [id, appId, title, systemPrompt ?? null, model ?? "sonnet", temperature ?? null],
+    [
+      id,
+      appId,
+      title,
+      systemPrompt ?? null,
+      model ?? "sonnet",
+      temperature ?? null,
+    ],
   );
 }
 
@@ -199,7 +319,7 @@ export function getConversation(id: string): ConversationRecord | null {
   const row = db.prepare("SELECT * FROM conversations WHERE id = ?").get(id) as
     | Record<string, unknown>
     | undefined;
-  return row ? row as unknown as ConversationRecord : null;
+  return row ? (row as unknown as ConversationRecord) : null;
 }
 
 export function listConversations(appId: string): {
@@ -208,9 +328,16 @@ export function listConversations(appId: string): {
   created_at: string;
   updated_at: string;
 }[] {
-  return db.prepare(
-    "SELECT id, title, created_at, updated_at FROM conversations WHERE app_id = ? ORDER BY updated_at DESC",
-  ).all(appId) as { id: string; title: string; created_at: string; updated_at: string }[];
+  return db
+    .prepare(
+      "SELECT id, title, created_at, updated_at FROM conversations WHERE app_id = ? ORDER BY updated_at DESC",
+    )
+    .all(appId) as {
+    id: string;
+    title: string;
+    created_at: string;
+    updated_at: string;
+  }[];
 }
 
 export function addMessage(
@@ -218,9 +345,11 @@ export function addMessage(
   role: string,
   content: string,
 ): number {
-  const id = db.prepare(
-    `INSERT INTO messages (conversation_id, role, content) VALUES (?, ?, ?)`,
-  ).run(conversationId, role, content);
+  const id = db
+    .prepare(
+      `INSERT INTO messages (conversation_id, role, content) VALUES (?, ?, ?)`,
+    )
+    .run(conversationId, role, content);
   db.exec(
     `UPDATE conversations SET updated_at = datetime('now') WHERE id = ?`,
     [conversationId],
@@ -234,9 +363,16 @@ export function getMessages(conversationId: string): {
   content: string;
   created_at: string;
 }[] {
-  return db.prepare(
-    "SELECT id, role, content, created_at FROM messages WHERE conversation_id = ? ORDER BY id ASC",
-  ).all(conversationId) as { id: number; role: string; content: string; created_at: string }[];
+  return db
+    .prepare(
+      "SELECT id, role, content, created_at FROM messages WHERE conversation_id = ? ORDER BY id ASC",
+    )
+    .all(conversationId) as {
+    id: number;
+    role: string;
+    content: string;
+    created_at: string;
+  }[];
 }
 
 export function updateConversationTitle(id: string, title: string): void {
@@ -314,18 +450,20 @@ export function getAppSchema(
   appId: string,
   tableName: string,
 ): ColumnDef[] | null {
-  const row = db.prepare(
-    "SELECT columns FROM app_schemas WHERE app_id = ? AND table_name = ?",
-  ).get(appId, tableName) as { columns: string } | undefined;
+  const row = db
+    .prepare(
+      "SELECT columns FROM app_schemas WHERE app_id = ? AND table_name = ?",
+    )
+    .get(appId, tableName) as { columns: string } | undefined;
   return row ? JSON.parse(row.columns) : null;
 }
 
 export function getAllAppSchemas(
   appId: string,
 ): { tableName: string; columns: ColumnDef[] }[] {
-  const rows = db.prepare(
-    "SELECT table_name, columns FROM app_schemas WHERE app_id = ?",
-  ).all(appId) as { table_name: string; columns: string }[];
+  const rows = db
+    .prepare("SELECT table_name, columns FROM app_schemas WHERE app_id = ?")
+    .all(appId) as { table_name: string; columns: string }[];
   return rows.map((r) => ({
     tableName: r.table_name,
     columns: JSON.parse(r.columns),
@@ -361,16 +499,20 @@ export function validateRowData(
   return { valid: errors.length === 0, errors };
 }
 
-export function insertRow(
-  ftn: string,
-  data: Record<string, unknown>,
-): number {
+export function insertRow(ftn: string, data: Record<string, unknown>): number {
   const keys = Object.keys(data);
   const placeholders = keys.map(() => "?").join(", ");
-  const values = keys.map((k) => data[k]) as (string | number | boolean | null)[];
-  const result = db.prepare(
-    `INSERT INTO "${ftn}" (${keys.map((k) => `"${k}"`).join(", ")}) VALUES (${placeholders})`,
-  ).run(...values);
+  const values = keys.map((k) => data[k]) as (
+    | string
+    | number
+    | boolean
+    | null
+  )[];
+  const result = db
+    .prepare(
+      `INSERT INTO "${ftn}" (${keys.map((k) => `"${k}"`).join(", ")}) VALUES (${placeholders})`,
+    )
+    .run(...values);
   return result;
 }
 
@@ -379,10 +521,9 @@ export function getRows(
   limit = 100,
   offset = 0,
 ): Record<string, unknown>[] {
-  return db.prepare(`SELECT * FROM "${ftn}" LIMIT ? OFFSET ?`).all(
-    limit,
-    offset,
-  ) as Record<string, unknown>[];
+  return db
+    .prepare(`SELECT * FROM "${ftn}" LIMIT ? OFFSET ?`)
+    .all(limit, offset) as Record<string, unknown>[];
 }
 
 export function getRow(
@@ -403,7 +544,12 @@ export function updateRow(
   const keys = Object.keys(data);
   if (keys.length === 0) return false;
   const setClauses = keys.map((k) => `"${k}" = ?`).join(", ");
-  const values = keys.map((k) => data[k]) as (string | number | boolean | null)[];
+  const values = keys.map((k) => data[k]) as (
+    | string
+    | number
+    | boolean
+    | null
+  )[];
   db.prepare(`UPDATE "${ftn}" SET ${setClauses} WHERE id = ?`).run(
     ...values,
     id,
@@ -434,9 +580,7 @@ export function saveApp(
   );
 }
 
-export function getApp(
-  id: string,
-): {
+export function getApp(id: string): {
   id: string;
   github_issue_url: string;
   title: string;
@@ -503,9 +647,14 @@ export function addColumnToTable(
     col.default !== undefined && col.default !== null
       ? ` DEFAULT ${typeof col.default === "string" ? `'${col.default}'` : col.default}`
       : "";
-  db.exec(
-    `ALTER TABLE "${ftn}" ADD COLUMN "${col.name}" ${sqlType(col.type)}${defaultClause}`,
-  );
+  try {
+    db.exec(
+      `ALTER TABLE "${ftn}" ADD COLUMN "${col.name}" ${sqlType(col.type)}${defaultClause}`,
+    );
+  } catch {
+    // Column already exists — ignore
+    return;
+  }
 
   // Update schema metadata
   const existing = getAppSchema(appId, tableName) ?? [];
@@ -514,6 +663,405 @@ export function addColumnToTable(
     `UPDATE app_schemas SET columns = ? WHERE app_id = ? AND table_name = ?`,
     [JSON.stringify(existing), appId, tableName],
   );
+}
+
+// === Edit Requests ===
+
+export function saveEditRequest(
+  appId: string,
+  username: string,
+  description: string,
+): void {
+  db.exec(
+    `INSERT INTO edit_requests (app_id, username, description) VALUES (?, ?, ?)`,
+    [appId, username, description],
+  );
+}
+
+export function listEditRequests(appId: string): {
+  id: number;
+  app_id: string;
+  username: string;
+  description: string;
+  created_at: string;
+}[] {
+  return db
+    .prepare(
+      "SELECT * FROM edit_requests WHERE app_id = ? ORDER BY created_at DESC",
+    )
+    .all(appId) as {
+    id: number;
+    app_id: string;
+    username: string;
+    description: string;
+    created_at: string;
+  }[];
+}
+
+export function deleteEditRequest(id: number): void {
+  db.exec(`DELETE FROM edit_requests WHERE id = ?`, [id]);
+}
+
+// === UX Lessons ===
+
+export function saveUxLesson(
+  lesson: string,
+  sourceAppId?: string,
+  sourceEditDescription?: string,
+): void {
+  db.exec(
+    `INSERT INTO ux_lessons (lesson, source_app_id, source_edit_description) VALUES (?, ?, ?)`,
+    [lesson, sourceAppId ?? null, sourceEditDescription ?? null],
+  );
+}
+
+export function listUxLessons(): {
+  id: number;
+  lesson: string;
+  source_app_id: string | null;
+  source_edit_description: string | null;
+  created_at: string;
+}[] {
+  return db
+    .prepare("SELECT * FROM ux_lessons ORDER BY created_at ASC")
+    .all() as {
+    id: number;
+    lesson: string;
+    source_app_id: string | null;
+    source_edit_description: string | null;
+    created_at: string;
+  }[];
+}
+
+export function deleteUxLesson(id: number): void {
+  db.exec(`DELETE FROM ux_lessons WHERE id = ?`, [id]);
+}
+
+export function listAllEditRequests(): {
+  id: number;
+  app_id: string;
+  username: string;
+  description: string;
+  created_at: string;
+}[] {
+  return db
+    .prepare("SELECT * FROM edit_requests ORDER BY created_at DESC")
+    .all() as {
+    id: number;
+    app_id: string;
+    username: string;
+    description: string;
+    created_at: string;
+  }[];
+}
+
+// === Agent CRUD ===
+
+export interface AgentRecord {
+  id: string;
+  app_id: string;
+  name: string;
+  static_prompt: string;
+  model: string;
+  temperature: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export function createAgent(
+  id: string,
+  appId: string,
+  name: string,
+  staticPrompt: string,
+  model?: string,
+  temperature?: number,
+): void {
+  db.exec(
+    `INSERT INTO agents (id, app_id, name, static_prompt, model, temperature) VALUES (?, ?, ?, ?, ?, ?)`,
+    [id, appId, name, staticPrompt, model ?? "sonnet", temperature ?? null],
+  );
+}
+
+export function getAgent(id: string): AgentRecord | null {
+  const row = db.prepare("SELECT * FROM agents WHERE id = ?").get(id) as
+    | Record<string, unknown>
+    | undefined;
+  return row ? (row as unknown as AgentRecord) : null;
+}
+
+export function listAgents(appId: string): AgentRecord[] {
+  return db
+    .prepare("SELECT * FROM agents WHERE app_id = ? ORDER BY created_at DESC")
+    .all(appId) as unknown as AgentRecord[];
+}
+
+export function updateAgent(
+  id: string,
+  fields: {
+    name?: string;
+    static_prompt?: string;
+    model?: string;
+    temperature?: number;
+  },
+): void {
+  const sets: string[] = [];
+  const vals: (string | number | null)[] = [];
+  if (fields.name !== undefined) {
+    sets.push("name = ?");
+    vals.push(fields.name);
+  }
+  if (fields.static_prompt !== undefined) {
+    sets.push("static_prompt = ?");
+    vals.push(fields.static_prompt);
+  }
+  if (fields.model !== undefined) {
+    sets.push("model = ?");
+    vals.push(fields.model);
+  }
+  if (fields.temperature !== undefined) {
+    sets.push("temperature = ?");
+    vals.push(fields.temperature);
+  }
+  if (sets.length === 0) return;
+  sets.push("updated_at = datetime('now')");
+  vals.push(id);
+  db.exec(`UPDATE agents SET ${sets.join(", ")} WHERE id = ?`, vals);
+}
+
+export function deleteAgent(agentId: string): void {
+  db.exec(`DELETE FROM agent_guidelines WHERE agent_id = ?`, [agentId]);
+  db.exec(`DELETE FROM agent_mcp_servers WHERE agent_id = ?`, [agentId]);
+  // Delete conversations and messages tied to this agent
+  const convos = db
+    .prepare("SELECT id FROM conversations WHERE agent_id = ?")
+    .all(agentId) as { id: string }[];
+  for (const conv of convos) {
+    db.exec(`DELETE FROM messages WHERE conversation_id = ?`, [conv.id]);
+  }
+  db.exec(`DELETE FROM conversations WHERE agent_id = ?`, [agentId]);
+  db.exec(`DELETE FROM agents WHERE id = ?`, [agentId]);
+}
+
+// === Guideline CRUD ===
+
+export interface GuidelineRecord {
+  id: string;
+  app_id: string;
+  name: string;
+  content: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export function createGuideline(
+  id: string,
+  appId: string,
+  name: string,
+  content: string,
+): void {
+  db.exec(
+    `INSERT INTO guidelines (id, app_id, name, content) VALUES (?, ?, ?, ?)`,
+    [id, appId, name, content],
+  );
+}
+
+export function getGuideline(id: string): GuidelineRecord | null {
+  const row = db.prepare("SELECT * FROM guidelines WHERE id = ?").get(id) as
+    | Record<string, unknown>
+    | undefined;
+  return row ? (row as unknown as GuidelineRecord) : null;
+}
+
+export function listGuidelines(appId: string): GuidelineRecord[] {
+  return db
+    .prepare(
+      "SELECT * FROM guidelines WHERE app_id = ? ORDER BY created_at DESC",
+    )
+    .all(appId) as unknown as GuidelineRecord[];
+}
+
+export function updateGuideline(
+  id: string,
+  fields: { name?: string; content?: string },
+): void {
+  const sets: string[] = [];
+  const vals: (string | null)[] = [];
+  if (fields.name !== undefined) {
+    sets.push("name = ?");
+    vals.push(fields.name);
+  }
+  if (fields.content !== undefined) {
+    sets.push("content = ?");
+    vals.push(fields.content);
+  }
+  if (sets.length === 0) return;
+  sets.push("updated_at = datetime('now')");
+  vals.push(id);
+  db.exec(`UPDATE guidelines SET ${sets.join(", ")} WHERE id = ?`, vals);
+}
+
+export function deleteGuideline(id: string): void {
+  db.exec(`DELETE FROM agent_guidelines WHERE guideline_id = ?`, [id]);
+  db.exec(`DELETE FROM guidelines WHERE id = ?`, [id]);
+}
+
+// === MCP Server CRUD ===
+
+export interface McpServerRecord {
+  id: string;
+  app_id: string;
+  name: string;
+  url: string;
+  api_key: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export function createMcpServer(
+  id: string,
+  appId: string,
+  name: string,
+  url: string,
+  apiKey?: string,
+): void {
+  db.exec(
+    `INSERT INTO mcp_servers (id, app_id, name, url, api_key) VALUES (?, ?, ?, ?, ?)`,
+    [id, appId, name, url, apiKey ?? null],
+  );
+}
+
+export function getMcpServer(id: string): McpServerRecord | null {
+  const row = db.prepare("SELECT * FROM mcp_servers WHERE id = ?").get(id) as
+    | Record<string, unknown>
+    | undefined;
+  return row ? (row as unknown as McpServerRecord) : null;
+}
+
+export function listMcpServers(appId: string): McpServerRecord[] {
+  return db
+    .prepare(
+      "SELECT * FROM mcp_servers WHERE app_id = ? ORDER BY created_at DESC",
+    )
+    .all(appId) as unknown as McpServerRecord[];
+}
+
+export function updateMcpServer(
+  id: string,
+  fields: { name?: string; url?: string; api_key?: string },
+): void {
+  const sets: string[] = [];
+  const vals: (string | null)[] = [];
+  if (fields.name !== undefined) {
+    sets.push("name = ?");
+    vals.push(fields.name);
+  }
+  if (fields.url !== undefined) {
+    sets.push("url = ?");
+    vals.push(fields.url);
+  }
+  if (fields.api_key !== undefined) {
+    sets.push("api_key = ?");
+    vals.push(fields.api_key);
+  }
+  if (sets.length === 0) return;
+  sets.push("updated_at = datetime('now')");
+  vals.push(id);
+  db.exec(`UPDATE mcp_servers SET ${sets.join(", ")} WHERE id = ?`, vals);
+}
+
+export function deleteMcpServer(id: string): void {
+  db.exec(`DELETE FROM agent_mcp_servers WHERE mcp_server_id = ?`, [id]);
+  db.exec(`DELETE FROM mcp_servers WHERE id = ?`, [id]);
+}
+
+// === Junction Table Helpers ===
+
+export function linkAgentGuideline(agentId: string, guidelineId: string): void {
+  db.exec(
+    `INSERT OR IGNORE INTO agent_guidelines (agent_id, guideline_id) VALUES (?, ?)`,
+    [agentId, guidelineId],
+  );
+}
+
+export function unlinkAgentGuideline(
+  agentId: string,
+  guidelineId: string,
+): void {
+  db.exec(
+    `DELETE FROM agent_guidelines WHERE agent_id = ? AND guideline_id = ?`,
+    [agentId, guidelineId],
+  );
+}
+
+export function getAgentGuidelines(agentId: string): GuidelineRecord[] {
+  return db
+    .prepare(
+      `SELECT g.* FROM guidelines g
+       INNER JOIN agent_guidelines ag ON g.id = ag.guideline_id
+       WHERE ag.agent_id = ?
+       ORDER BY g.created_at ASC`,
+    )
+    .all(agentId) as unknown as GuidelineRecord[];
+}
+
+export function linkAgentMcpServer(agentId: string, mcpServerId: string): void {
+  db.exec(
+    `INSERT OR IGNORE INTO agent_mcp_servers (agent_id, mcp_server_id) VALUES (?, ?)`,
+    [agentId, mcpServerId],
+  );
+}
+
+export function unlinkAgentMcpServer(
+  agentId: string,
+  mcpServerId: string,
+): void {
+  db.exec(
+    `DELETE FROM agent_mcp_servers WHERE agent_id = ? AND mcp_server_id = ?`,
+    [agentId, mcpServerId],
+  );
+}
+
+export function getAgentMcpServers(agentId: string): McpServerRecord[] {
+  return db
+    .prepare(
+      `SELECT s.* FROM mcp_servers s
+       INNER JOIN agent_mcp_servers ams ON s.id = ams.mcp_server_id
+       WHERE ams.agent_id = ?
+       ORDER BY s.created_at ASC`,
+    )
+    .all(agentId) as unknown as McpServerRecord[];
+}
+
+// === Agent-scoped conversation helpers ===
+
+export function createAgentConversation(
+  id: string,
+  appId: string,
+  agentId: string,
+  title: string,
+): void {
+  db.exec(
+    `INSERT INTO conversations (id, app_id, agent_id, title, model) VALUES (?, ?, ?, ?, 'sonnet')`,
+    [id, appId, agentId, title],
+  );
+}
+
+export function listAgentConversations(agentId: string): {
+  id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+}[] {
+  return db
+    .prepare(
+      "SELECT id, title, created_at, updated_at FROM conversations WHERE agent_id = ? ORDER BY updated_at DESC",
+    )
+    .all(agentId) as {
+    id: string;
+    title: string;
+    created_at: string;
+    updated_at: string;
+  }[];
 }
 
 export { db };
