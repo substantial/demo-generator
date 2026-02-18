@@ -381,4 +381,4 @@ app.get("/apps/:appId", (c) => {
   return c.html(record.html);
 });
 
-Deno.serve(app.fetch);
+Deno.serve({ port: 8000, hostname: "0.0.0.0" }, app.fetch);
