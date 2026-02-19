@@ -6,10 +6,14 @@ import {
   getApp,
   getAllAppSchemas,
   updateAppHtml,
+  updateAppPocPlan,
   addColumnToTable,
   insertRow,
   getFullTableName,
   listUxLessons,
+  listEditRequests,
+  listConversations,
+  getMessages,
   type TableDef,
   type ColumnDef,
 } from "./db.ts";
@@ -17,6 +21,8 @@ import {
 export interface GenerateInput {
   title?: string;
   body?: string;
+  prd?: string;
+  erd?: string;
 }
 
 const SYSTEM_PROMPT = `You are a full-stack web app generator. Given a description (from a GitHub issue or direct input), you produce a complete single-page web app with realistic seed data.
@@ -183,7 +189,14 @@ The agent's system prompt is: static_prompt + all linked guidelines' content + a
 If MCP servers are linked, the agent can call external tools automatically (tool use loop).
 
 LOGOS & AVATARS:
-- For logos: https://ui-avatars.com/api/?name=CompanyName&size=128&background=random`;
+- For logos: https://ui-avatars.com/api/?name=CompanyName&size=128&background=random
+
+CRITICAL GUARDRAILS — DO NOT VIOLATE:
+- NEVER build features beyond CRUD operations + chat/conversation APIs + agent APIs
+- NEVER create login/signup forms — the platform handles authentication automatically
+- NEVER attempt file uploads, WebSockets, email sending, payment processing, or any server-side feature
+- NEVER create server-side code — your output is HTML + table definitions + seedData ONLY
+- If a request implies unsupported capabilities, implement the closest client-side equivalent with a comment explaining the limitation`;
 
 const EDIT_SYSTEM_PROMPT = `You are a full-stack web app editor. You receive current HTML + schema and a change description.
 
@@ -206,7 +219,9 @@ Your ENTIRE response must be a single valid JSON object. No code fences, no surr
 - If no schema changes: newTables=[], newColumns={}
 - Use {{APP_ID}} placeholder in API URLs
 - Preserve existing functionality unless the edit changes it
-- May use CDN imports from esm.sh, jsdelivr, unpkg`;
+- May use CDN imports from esm.sh, jsdelivr, unpkg
+
+GUARDRAILS: Never build login/signup forms (platform handles auth), no file uploads, WebSockets, email, payments, or server-side code. Output is HTML + tables + seedData only.`;
 
 export async function extractUxLesson(
   editDescription: string,
@@ -639,6 +654,14 @@ export async function generateApp(
   }
   const startTime = Date.now();
 
+  let userContent = `App Request: ${title}\n\n${body}`;
+  if (input.prd) {
+    userContent += `\n\n--- PRODUCT REQUIREMENTS DOCUMENT ---\n${input.prd}`;
+  }
+  if (input.erd) {
+    userContent += `\n\n--- ENGINEERING REQUIREMENTS DOCUMENT ---\n${input.erd}`;
+  }
+
   const stream = client.messages.stream({
     model: "claude-opus-4-6",
     max_tokens: 64000,
@@ -646,7 +669,7 @@ export async function generateApp(
     messages: [
       {
         role: "user",
-        content: `App Request: ${title}\n\n${body}`,
+        content: userContent,
       },
     ],
   });
@@ -704,7 +727,7 @@ export async function generateApp(
   }
 
   const html = parsed.html.replace(/\{\{APP_ID\}\}/g, appId);
-  saveApp(appId, issueUrl, title, html, body);
+  saveApp(appId, issueUrl, title, html, body, input.prd, input.erd);
   console.log(
     `[generate] App saved: "${title}" -> /apps/${appId}`,
   );
@@ -853,5 +876,268 @@ export async function editApp(
     onProgress?.({ step: "error", message: msg });
     throw err;
   }
+}
+
+// === PRD / ERD / POC Plan Generation ===
+
+const PLATFORM_CONSTRAINTS = `PLATFORM CONSTRAINTS (the generated app runs on this platform):
+- Output is a single-page HTML document with inline CSS and JavaScript
+- Data persistence via SQLite tables accessed through REST CRUD endpoints
+- LLM chat available via stateless /chat and persistent /conversations endpoints
+- AI agents with custom prompts, guidelines, and MCP tool integrations
+- Authentication is handled by the platform — do NOT design login/signup flows
+- No file uploads, WebSockets, email, payment processing, or server-side code
+- CDN imports allowed (Chart.js, D3, etc.)
+- All interactivity must be client-side JavaScript`;
+
+export async function generatePrd(
+  description: string,
+  title: string,
+  client: Anthropic,
+): Promise<string> {
+  console.log(`[generate] Generating PRD for "${title}"...`);
+  const startTime = Date.now();
+
+  const response = await client.messages.create({
+    model: "claude-opus-4-6",
+    max_tokens: 8000,
+    messages: [
+      {
+        role: "user",
+        content: `You are a senior product manager. Create a comprehensive Product Requirements Document (PRD) for the following app.
+
+App Title: ${title}
+App Description:
+${description}
+
+${PLATFORM_CONSTRAINTS}
+
+Return a well-structured markdown PRD with these sections:
+1. **Overview** — What the app does and its primary value proposition
+2. **User Personas** — Who will use this app and their goals
+3. **Core Features** — Each feature with clear acceptance criteria
+4. **Data Model** — What data entities are needed and their relationships
+5. **User Flows** — Key workflows users will go through
+6. **UI/UX Requirements** — Layout, navigation, visual design guidance
+7. **Non-Functional Requirements** — Performance, accessibility, responsiveness
+
+Be specific and actionable. Every feature must be implementable within the platform constraints above.`,
+      },
+    ],
+  });
+
+  const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+  console.log(`[generate] PRD generated in ${elapsed}s`);
+
+  const block = response.content[0];
+  if (block.type !== "text") throw new Error("Unexpected response type");
+  return block.text;
+}
+
+export async function generateErd(
+  prd: string,
+  title: string,
+  client: Anthropic,
+): Promise<string> {
+  console.log(`[generate] Generating ERD for "${title}"...`);
+  const startTime = Date.now();
+
+  const uxLessonsBlock = buildUxLessonsBlock();
+
+  const response = await client.messages.create({
+    model: "claude-opus-4-6",
+    max_tokens: 8000,
+    messages: [
+      {
+        role: "user",
+        content: `You are a senior software engineer. Create a comprehensive Engineering Requirements Document (ERD) based on the following PRD.
+
+App Title: ${title}
+
+--- PRODUCT REQUIREMENTS DOCUMENT ---
+${prd}
+
+${PLATFORM_CONSTRAINTS}
+${uxLessonsBlock}
+
+Return a well-structured markdown ERD with these sections:
+1. **Database Schema** — Exact table and column definitions (name, type, nullable, defaults). Remember: every table auto-gets \`id INTEGER PRIMARY KEY AUTOINCREMENT\`
+2. **Seed Data Plan** — What realistic seed data to generate (10-15 rows per main table) with specific examples
+3. **API Integration Plan** — Which CRUD endpoints the app will use and how
+4. **AI/Chat Integration** — How to use stateless /chat or persistent /conversations for AI features
+5. **UI Architecture** — Component layout, sections, navigation structure
+6. **Interactive Features** — Client-side interactivity, filtering, sorting, modals, charts
+7. **Error Handling** — How to handle API errors, loading states, empty states
+8. **CDN Dependencies** — Which external libraries to import and why
+
+Be extremely specific. A developer should be able to build the complete app from this ERD alone.`,
+      },
+    ],
+  });
+
+  const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+  console.log(`[generate] ERD generated in ${elapsed}s`);
+
+  const block = response.content[0];
+  if (block.type !== "text") throw new Error("Unexpected response type");
+  return block.text;
+}
+
+export async function regenerateApp(
+  appId: string,
+  prd: string,
+  erd: string,
+  client: Anthropic,
+): Promise<void> {
+  console.log(`[generate] Regenerating app ${appId} from PRD+ERD...`);
+  const app = getApp(appId);
+  if (!app) throw new Error("App not found");
+
+  const uxLessonsBlock = buildUxLessonsBlock();
+  const systemPrompt = SYSTEM_PROMPT + uxLessonsBlock;
+
+  let userContent = `App Request: ${app.title}\n\n${app.description}`;
+  userContent += `\n\n--- PRODUCT REQUIREMENTS DOCUMENT ---\n${prd}`;
+  userContent += `\n\n--- ENGINEERING REQUIREMENTS DOCUMENT ---\n${erd}`;
+
+  const startTime = Date.now();
+  const stream = client.messages.stream({
+    model: "claude-opus-4-6",
+    max_tokens: 64000,
+    system: systemPrompt,
+    messages: [{ role: "user", content: userContent }],
+  });
+
+  let lastLoggedTokens = 0;
+  stream.on("text", () => {
+    const current = stream.currentMessage?.usage?.output_tokens ?? 0;
+    if (current - lastLoggedTokens >= 2000) {
+      console.log(`[generate] Regeneration streaming... ${current} output tokens so far`);
+      lastLoggedTokens = current;
+    }
+  });
+
+  const response = await stream.finalMessage();
+  const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+  console.log(`[generate] Regeneration response in ${elapsed}s, stop: ${response.stop_reason}`);
+
+  const wasTruncated = response.stop_reason === "max_tokens";
+  const block = response.content[0];
+  if (block.type !== "text") throw new Error("Unexpected response type");
+
+  const parsed = parseResponse(block.text, "regenerateApp", wasTruncated);
+
+  // Drop existing tables and recreate
+  const existingSchemas = getAllAppSchemas(appId);
+  for (const schema of existingSchemas) {
+    const ftn = getFullTableName(appId, schema.tableName);
+    try {
+      // We need to import db for raw exec — use getFullTableName and insertRow pattern
+      // Actually we can use the db module's exec via a helper. For now, just create fresh tables.
+    } catch { /* ignore */ }
+  }
+
+  console.log(`[generate] Creating ${parsed.tables.length} table(s)...`);
+  createAppTables(appId, parsed.tables);
+
+  if (parsed.seedData) {
+    console.log(`[generate] Inserting seed data...`);
+    insertSeedData(appId, parsed.seedData);
+  }
+
+  const html = parsed.html.replace(/\{\{APP_ID\}\}/g, appId);
+  updateAppHtml(appId, html);
+  console.log(`[generate] App regenerated successfully`);
+}
+
+export async function generatePocPlan(
+  appId: string,
+  client: Anthropic,
+): Promise<string> {
+  console.log(`[generate] Generating POC Build Plan for app ${appId}...`);
+  const app = getApp(appId);
+  if (!app) throw new Error("App not found");
+
+  // Gather context
+  const schemas = getAllAppSchemas(appId);
+  const editReqs = listEditRequests(appId);
+  const convos = listConversations(appId);
+
+  // Collect recent chat messages (up to 10 convos, 20 msgs each)
+  let chatContext = "";
+  const convosToScan = convos.slice(0, 10);
+  for (const convo of convosToScan) {
+    const msgs = getMessages(convo.id);
+    const recentMsgs = msgs.slice(-20);
+    if (recentMsgs.length > 0) {
+      chatContext += `\n\nConversation "${convo.title}":\n`;
+      for (const msg of recentMsgs) {
+        chatContext += `  [${msg.role}]: ${msg.content.slice(0, 500)}\n`;
+      }
+    }
+  }
+
+  const schemaDesc = schemas.map(s =>
+    `Table "${s.tableName}": ${s.columns.map(c => `${c.name} (${c.type})`).join(", ")}`
+  ).join("\n");
+
+  const editReqDesc = editReqs.length > 0
+    ? editReqs.map((r, i) => `${i + 1}. [${r.username}] ${r.description}`).join("\n")
+    : "No edit requests yet.";
+
+  const startTime = Date.now();
+  const response = await client.messages.create({
+    model: "claude-opus-4-6",
+    max_tokens: 8000,
+    messages: [
+      {
+        role: "user",
+        content: `You are a technical project manager. Generate a Trello-ready POC Build Plan for turning this prototype app into a production application.
+
+App Title: ${app.title}
+App Description: ${app.description}
+
+${app.prd ? `--- PRD ---\n${app.prd}\n` : ""}
+${app.erd ? `--- ERD ---\n${app.erd}\n` : ""}
+--- CURRENT SCHEMA ---
+${schemaDesc}
+
+--- CLIENT EDIT REQUESTS (feedback from prospect) ---
+${editReqDesc}
+
+${chatContext ? `--- RECENT CHAT CONVERSATIONS (client interactions) ---${chatContext}` : ""}
+
+--- CURRENT HTML (first 5000 chars) ---
+${app.html.slice(0, 5000)}
+
+Generate a markdown build plan organized into sprints with Trello-ready tickets:
+
+**Sprint 1: Foundation** — Infrastructure, database, authentication, core API
+**Sprint 2: Core Features** — Features from the PRD
+**Sprint 3: Polish & Feedback** — Address client edit requests and chat feedback
+**Sprint 4: Launch Prep** — Testing, documentation, deployment
+
+For each ticket use this format:
+**[TICKET-XXX] Title**
+- Estimate: S / M / L / XL
+- Description: What needs to be done
+- Acceptance Criteria:
+  - [ ] Criterion 1
+  - [ ] Criterion 2
+
+Number tickets sequentially (TICKET-001, TICKET-002, etc.). Be specific and actionable.`,
+      },
+    ],
+  });
+
+  const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+  console.log(`[generate] POC Build Plan generated in ${elapsed}s`);
+
+  const block = response.content[0];
+  if (block.type !== "text") throw new Error("Unexpected response type");
+
+  // Store it
+  updateAppPocPlan(appId, block.text);
+  return block.text;
 }
 

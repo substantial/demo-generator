@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>POC Build Plan</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.css">
+  <style>
+    :root {
+      --bg: #f5f5f5;
+      --surface: #fff;
+      --surface-alt: #f9f9f9;
+      --text: #1a1a1a;
+      --text-secondary: #666;
+      --text-muted: #888;
+      --border: #e0e0e0;
+      --border-light: #ccc;
+      --accent: #4a90d9;
+      --accent-hover: #357abd;
+      --danger: #d32f2f;
+      --success-text: #2e7d32;
+      --shadow: rgba(0,0,0,0.1);
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #121212;
+        --surface: #1e1e1e;
+        --surface-alt: #2a2a2a;
+        --text: #e4e4e4;
+        --text-secondary: #a0a0a0;
+        --text-muted: #777;
+        --border: #333;
+        --border-light: #444;
+        --accent: #5b9fd6;
+        --accent-hover: #79b3e0;
+        --danger: #ef5350;
+        --success-text: #81c784;
+        --shadow: rgba(0,0,0,0.3);
+      }
+      .EasyMDEContainer .CodeMirror {
+        background: var(--surface-alt);
+        color: var(--text);
+        border-color: var(--border);
+      }
+      .EasyMDEContainer .editor-toolbar {
+        border-color: var(--border);
+      }
+      .EasyMDEContainer .editor-toolbar button {
+        color: var(--text-secondary) !important;
+      }
+      .EasyMDEContainer .editor-toolbar button:hover,
+      .EasyMDEContainer .editor-toolbar button.active {
+        background: var(--surface-alt);
+        border-color: var(--border);
+      }
+      .EasyMDEContainer .editor-preview {
+        background: var(--surface);
+        color: var(--text);
+      }
+      .EasyMDEContainer .editor-preview pre {
+        background: var(--surface-alt);
+      }
+      .EasyMDEContainer .CodeMirror-cursor {
+        border-left-color: var(--text);
+      }
+      .EasyMDEContainer .editor-statusbar {
+        color: var(--text-muted);
+      }
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      padding: 1.5rem 2rem;
+      max-width: 1100px;
+      margin: 0 auto;
+    }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .breadcrumb { font-size: 0.85rem; margin-bottom: 1rem; color: var(--text-muted); }
+    .breadcrumb a { color: var(--text-secondary); }
+    .page-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1rem; flex-wrap: wrap; gap: 0.5rem; }
+    .page-header h1 { font-size: 1.3rem; }
+    .header-actions { display: flex; gap: 0.5rem; }
+    .btn {
+      padding: 0.45rem 1rem;
+      font-size: 0.85rem;
+      border: 1px solid var(--border-light);
+      border-radius: 4px;
+      background: var(--surface);
+      cursor: pointer;
+      color: var(--text-secondary);
+      transition: background 0.1s;
+    }
+    .btn:hover { background: var(--surface-alt); }
+    .btn-primary { color: #fff; background: var(--accent); border-color: var(--accent); }
+    .btn-primary:hover { background: var(--accent-hover); }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .status-msg { font-size: 0.85rem; color: var(--text-secondary); margin-top: 0.5rem; min-height: 1.2em; }
+    .status-msg.error { color: var(--danger); }
+    .status-msg.success { color: var(--success-text); }
+    .spinner-inline::after {
+      content: "";
+      display: inline-block;
+      width: 14px; height: 14px;
+      border: 2px solid var(--border-light);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      vertical-align: middle;
+      margin-left: 0.4rem;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .loading-page { text-align: center; padding: 4rem; color: var(--text-muted); }
+    .EasyMDEContainer { margin-bottom: 1rem; }
+    .EasyMDEContainer .CodeMirror { min-height: 400px; font-size: 0.9rem; }
+  </style>
+</head>
+<body>
+  <div class="breadcrumb">
+    <a href="/dashboard">Dashboard</a> &rsaquo;
+    <a href="" id="back-link">App</a> &rsaquo;
+    POC Build Plan
+  </div>
+
+  <div id="page-loading" class="loading-page">Loading...</div>
+  <div id="page-content" style="display:none">
+    <div class="page-header">
+      <h1>POC Build Plan</h1>
+      <div class="header-actions">
+        <button class="btn btn-primary" id="generate-btn">Generate Build Plan</button>
+        <button class="btn" id="save-btn">Save Edits</button>
+      </div>
+    </div>
+    <p style="font-size:0.8rem;color:var(--text-muted);margin-bottom:0.75rem">Trello-ready tickets generated from PRD + ERD + client feedback. You can edit after generating.</p>
+    <div class="status-msg" id="status"></div>
+    <textarea id="editor"></textarea>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.js"></script>
+  <script>
+    const appId = window.location.pathname.split("/")[3];
+    let appData = null;
+    let easyMDE = null;
+
+    async function authFetch(url, opts) {
+      const res = await fetch(url, opts);
+      if (res.status === 401) { window.location.href = "/login"; throw new Error("Unauthorized"); }
+      return res;
+    }
+    async function safeJson(res) {
+      const text = await res.text();
+      try { return JSON.parse(text); } catch { throw new Error(text || `HTTP ${res.status}`); }
+    }
+    function setStatus(msg, type) {
+      const el = document.getElementById("status");
+      el.textContent = msg;
+      el.className = "status-msg" + (type ? " " + type : "");
+    }
+
+    async function loadApp() {
+      try {
+        const res = await authFetch("/api/apps");
+        if (!res.ok) throw new Error("Failed to load apps");
+        const apps = await safeJson(res);
+        appData = apps.find(a => a.id === appId);
+        if (!appData) { document.getElementById("page-loading").textContent = "App not found."; return; }
+
+        document.title = appData.title + " — POC Build Plan";
+        document.getElementById("back-link").href = "/dashboard/apps/" + appId;
+        document.getElementById("back-link").textContent = appData.title;
+
+        easyMDE = new EasyMDE({
+          element: document.getElementById("editor"),
+          spellChecker: false,
+          autosave: { enabled: false },
+          placeholder: "Build plan will appear here after generating...",
+          status: ["lines", "words"],
+          toolbar: ["bold", "italic", "heading", "|", "unordered-list", "ordered-list", "checklist", "|", "link", "code", "quote", "|", "preview", "side-by-side", "fullscreen", "|", "guide"],
+        });
+        easyMDE.value(appData.poc_plan || "");
+
+        document.getElementById("page-loading").style.display = "none";
+        document.getElementById("page-content").style.display = "";
+      } catch (e) {
+        document.getElementById("page-loading").textContent = "Error: " + e.message;
+      }
+    }
+
+    document.getElementById("save-btn").addEventListener("click", async () => {
+      const pocPlan = easyMDE.value();
+      try {
+        // Save by POSTing to the poc-plan endpoint with the plan content
+        // We'll re-use the existing endpoint structure — store directly
+        const res = await authFetch(`/api/apps/${appId}/poc-plan`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ poc_plan: pocPlan }),
+        });
+        if (!res.ok) { const d = await safeJson(res); throw new Error(d.error); }
+        setStatus("Build plan saved", "success");
+      } catch (e) { setStatus("Error: " + e.message, "error"); }
+    });
+
+    document.getElementById("generate-btn").addEventListener("click", async () => {
+      const btn = document.getElementById("generate-btn");
+      btn.disabled = true;
+      btn.innerHTML = 'Generating<span class="spinner-inline"></span>';
+      setStatus("Generating POC Build Plan from PRD + ERD + client feedback...");
+      try {
+        const res = await authFetch(`/api/apps/${appId}/poc-plan`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+        });
+        if (!res.ok) { const d = await safeJson(res); throw new Error(d.error); }
+        const data = await safeJson(res);
+        easyMDE.value(data.poc_plan);
+        appData.poc_plan = data.poc_plan;
+        setStatus("Build plan generated and saved", "success");
+      } catch (e) { setStatus("Error: " + e.message, "error"); }
+      btn.disabled = false;
+      btn.textContent = "Generate Build Plan";
+    });
+
+    loadApp();
+  </script>
+</body>
+</html>

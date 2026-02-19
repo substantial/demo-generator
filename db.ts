@@ -13,6 +13,11 @@ try {
   // Column already exists
 }
 
+// Migration: add PRD/ERD/POC plan columns
+try { db.exec(`ALTER TABLE apps ADD COLUMN prd TEXT DEFAULT ''`); } catch {}
+try { db.exec(`ALTER TABLE apps ADD COLUMN erd TEXT DEFAULT ''`); } catch {}
+try { db.exec(`ALTER TABLE apps ADD COLUMN poc_plan TEXT DEFAULT ''`); } catch {}
+
 // Create meta tables
 db.exec(`
   CREATE TABLE IF NOT EXISTS apps (
@@ -258,6 +263,9 @@ export function listAppsWithCredentials(): {
   id: string;
   title: string;
   description: string;
+  prd: string;
+  erd: string;
+  poc_plan: string;
   github_issue_url: string;
   created_at: string;
   cred_username: string | null;
@@ -265,7 +273,7 @@ export function listAppsWithCredentials(): {
 }[] {
   return db
     .prepare(
-      `SELECT a.id, a.title, a.description, a.github_issue_url, a.created_at,
+      `SELECT a.id, a.title, a.description, a.prd, a.erd, a.poc_plan, a.github_issue_url, a.created_at,
               ac.username AS cred_username, ac.password AS cred_password
        FROM apps a
        LEFT JOIN app_credentials ac ON a.id = ac.app_id
@@ -275,6 +283,9 @@ export function listAppsWithCredentials(): {
     id: string;
     title: string;
     description: string;
+    prd: string;
+    erd: string;
+    poc_plan: string;
     github_issue_url: string;
     created_at: string;
     cred_username: string | null;
@@ -573,10 +584,12 @@ export function saveApp(
   title: string,
   html: string,
   description?: string,
+  prd?: string,
+  erd?: string,
 ): void {
   db.exec(
-    `INSERT INTO apps (id, github_issue_url, title, html, description) VALUES (?, ?, ?, ?, ?)`,
-    [id, issueUrl, title, html, description ?? ""],
+    `INSERT INTO apps (id, github_issue_url, title, html, description, prd, erd) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [id, issueUrl, title, html, description ?? "", prd ?? "", erd ?? ""],
   );
 }
 
@@ -586,6 +599,9 @@ export function getApp(id: string): {
   title: string;
   html: string;
   description: string;
+  prd: string;
+  erd: string;
+  poc_plan: string;
   created_at: string;
   updated_at: string;
 } | null {
@@ -599,6 +615,9 @@ export function getApp(id: string): {
         title: string;
         html: string;
         description: string;
+        prd: string;
+        erd: string;
+        poc_plan: string;
         created_at: string;
         updated_at: string;
       })
@@ -634,6 +653,27 @@ export function updateAppHtml(appId: string, html: string): void {
   db.exec(
     `UPDATE apps SET html = ?, updated_at = datetime('now') WHERE id = ?`,
     [html, appId],
+  );
+}
+
+export function updateAppPrd(appId: string, prd: string): void {
+  db.exec(
+    `UPDATE apps SET prd = ?, updated_at = datetime('now') WHERE id = ?`,
+    [prd, appId],
+  );
+}
+
+export function updateAppErd(appId: string, erd: string): void {
+  db.exec(
+    `UPDATE apps SET erd = ?, updated_at = datetime('now') WHERE id = ?`,
+    [erd, appId],
+  );
+}
+
+export function updateAppPocPlan(appId: string, pocPlan: string): void {
+  db.exec(
+    `UPDATE apps SET poc_plan = ?, updated_at = datetime('now') WHERE id = ?`,
+    [pocPlan, appId],
   );
 }
 

@@ -23,7 +23,6 @@
       --success-text: #2e7d32;
       --shadow: rgba(0,0,0,0.1);
       --shadow-hover: rgba(0,0,0,0.15);
-      --overlay: rgba(0,0,0,0.4);
     }
     @media (prefers-color-scheme: dark) {
       :root {
@@ -44,7 +43,6 @@
         --success-text: #81c784;
         --shadow: rgba(0,0,0,0.3);
         --shadow-hover: rgba(0,0,0,0.5);
-        --overlay: rgba(0,0,0,0.6);
       }
     }
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -92,6 +90,38 @@
     .generate-form button:disabled { opacity: 0.5; cursor: not-allowed; }
     .generate-status { margin-top: 0.5rem; font-size: 0.875rem; color: var(--text-secondary); }
     .generate-status.error { color: var(--danger); }
+    .progress-stages { display: flex; gap: 0.5rem; margin-top: 0.75rem; flex-wrap: wrap; }
+    .progress-stage {
+      padding: 0.35rem 0.75rem;
+      border-radius: 20px;
+      font-size: 0.8rem;
+      background: var(--surface-alt);
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      transition: all 0.3s;
+    }
+    .progress-stage.active {
+      background: color-mix(in srgb, var(--accent) 15%, var(--surface));
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+    .progress-stage.done {
+      background: var(--success-bg);
+      border-color: var(--success-border);
+      color: var(--success-text);
+    }
+    .progress-stage.active::after {
+      content: "";
+      display: inline-block;
+      width: 12px;
+      height: 12px;
+      border: 2px solid var(--accent);
+      border-top-color: transparent;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      vertical-align: middle;
+      margin-left: 0.4rem;
+    }
     .grid {
       display: grid;
       grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
@@ -130,31 +160,6 @@
       overflow: hidden;
       line-height: 1.4;
     }
-    .card .creds {
-      font-size: 0.8rem;
-      color: var(--text-secondary);
-      background: var(--surface-alt);
-      border: 1px solid var(--border);
-      border-radius: 4px;
-      padding: 0.4rem 0.6rem;
-      margin-top: 0.5rem;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 0.5rem;
-    }
-    .creds-info { font-family: monospace; font-size: 0.78rem; line-height: 1.5; }
-    .creds-info .pass-hidden { color: var(--text-muted); letter-spacing: 2px; }
-    .creds-toggle {
-      background: none;
-      border: none;
-      color: var(--accent);
-      cursor: pointer;
-      font-size: 0.75rem;
-      white-space: nowrap;
-      padding: 0.15rem 0;
-    }
-    .creds-toggle:hover { text-decoration: underline; }
     .card-actions {
       display: flex;
       gap: 0.4rem;
@@ -174,58 +179,8 @@
       transition: background 0.1s;
     }
     .card-actions button:hover { background: var(--surface-alt); }
-    .card-actions .btn-danger { color: var(--danger); border-color: var(--danger); }
-    .card-actions .btn-danger:hover { background: color-mix(in srgb, var(--danger) 10%, var(--surface)); }
     .card-actions .btn-primary { color: var(--accent); border-color: var(--accent); }
     .card-actions .btn-primary:hover { background: color-mix(in srgb, var(--accent) 10%, var(--surface)); }
-    .modal-overlay {
-      display: none;
-      position: fixed;
-      top: 0; left: 0; right: 0; bottom: 0;
-      background: var(--overlay);
-      z-index: 1000;
-      align-items: center;
-      justify-content: center;
-    }
-    .modal-overlay.open { display: flex; }
-    .modal {
-      background: var(--surface);
-      border-radius: 10px;
-      box-shadow: 0 8px 30px var(--shadow-hover);
-      padding: 1.5rem;
-      width: 100%;
-      max-width: 400px;
-      color: var(--text);
-    }
-    .modal h3 { margin-bottom: 1rem; font-size: 1.1rem; }
-    .modal label { display: block; font-size: 0.875rem; margin-bottom: 0.25rem; color: var(--text-secondary); }
-    .modal input {
-      width: 100%;
-      padding: 0.5rem 0.75rem;
-      border: 1px solid var(--border-light);
-      border-radius: 4px;
-      font-size: 0.95rem;
-      margin-bottom: 0.75rem;
-      background: var(--surface-alt);
-      color: var(--text);
-    }
-    .modal input:focus { outline: none; border-color: var(--accent); }
-    .modal-divider { border: none; border-top: 1px solid var(--border); margin: 0.75rem 0; }
-    .modal-actions { display: flex; gap: 0.5rem; justify-content: flex-end; margin-top: 0.75rem; }
-    .modal-actions button {
-      padding: 0.45rem 1rem;
-      border-radius: 4px;
-      font-size: 0.9rem;
-      cursor: pointer;
-      border: 1px solid var(--border-light);
-      background: var(--surface);
-      color: var(--text);
-    }
-    .modal-actions button:hover { background: var(--surface-alt); }
-    .modal-actions button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
-    .modal-actions button.primary:hover { background: var(--accent-hover); }
-    .modal-actions button.danger { background: var(--danger); color: #fff; border-color: var(--danger); }
-    .modal-actions button.danger:hover { background: var(--danger-hover); }
     .toast {
       position: fixed;
       bottom: 20px;
@@ -290,33 +245,10 @@
     <div class="spinner">Loading apps...</div>
   </div>
 
-  <!-- Edit App Modal -->
-  <div class="modal-overlay" id="edit-modal">
-    <div class="modal">
-      <h3>Edit App</h3>
-      <label for="edit-title">App Name</label>
-      <input type="text" id="edit-title" placeholder="App name">
-      <hr class="modal-divider">
-      <label for="edit-username">Username</label>
-      <input type="text" id="edit-username" placeholder="Username">
-      <label for="edit-password">Password</label>
-      <input type="text" id="edit-password" placeholder="Password">
-      <div class="modal-actions">
-        <button onclick="closeEditModal()">Cancel</button>
-        <button class="danger" id="edit-remove-creds-btn" onclick="removeCredentials()">Remove Creds</button>
-        <button class="primary" onclick="saveAppEdits()">Save</button>
-      </div>
-    </div>
-  </div>
-
   <!-- Toast -->
   <div class="toast" id="toast"></div>
 
   <script>
-    let currentEditAppId = null;
-    let appsById = {};
-    const revealedPasswords = new Set();
-
     async function authFetch(url, opts) {
       const res = await fetch(url, opts);
       if (res.status === 401) {
@@ -348,92 +280,6 @@
       setTimeout(() => t.classList.remove("show"), 2500);
     }
 
-    function togglePassword(appId) {
-      if (revealedPasswords.has(appId)) {
-        revealedPasswords.delete(appId);
-      } else {
-        revealedPasswords.add(appId);
-      }
-      renderApps();
-    }
-
-    function openEditModal(appId) {
-      currentEditAppId = appId;
-      const app = appsById[appId];
-      document.getElementById("edit-title").value = app?.title || "";
-      document.getElementById("edit-username").value = app?.cred_username || "";
-      document.getElementById("edit-password").value = app?.cred_password || "";
-      document.getElementById("edit-remove-creds-btn").style.display = app?.cred_username ? "" : "none";
-      document.getElementById("edit-modal").classList.add("open");
-    }
-
-    function closeEditModal() {
-      document.getElementById("edit-modal").classList.remove("open");
-      currentEditAppId = null;
-    }
-
-    async function saveAppEdits() {
-      const title = document.getElementById("edit-title").value.trim();
-      const username = document.getElementById("edit-username").value.trim();
-      const password = document.getElementById("edit-password").value.trim();
-      const appId = currentEditAppId;
-
-      if (!title) { showToast("App name is required"); return; }
-
-      try {
-        const app = appsById[appId];
-        if (title !== app?.title) {
-          const res = await authFetch(`/api/apps/${appId}/title`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ title }),
-          });
-          if (!res.ok) { const d = await safeJson(res); throw new Error(d.error); }
-        }
-
-        if (username && password) {
-          const res = await authFetch(`/api/apps/${appId}/credentials`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ username, password }),
-          });
-          if (!res.ok) { const d = await safeJson(res); throw new Error(d.error); }
-        } else if (!username && !password && app?.cred_username) {
-          const res = await authFetch(`/api/apps/${appId}/credentials/delete`, { method: "POST" });
-          if (!res.ok) { const d = await safeJson(res); throw new Error(d.error); }
-        } else if ((username && !password) || (!username && password)) {
-          showToast("Both username and password are required, or clear both to remove");
-          return;
-        }
-
-        showToast("App updated");
-        closeEditModal();
-        loadApps();
-      } catch (e) { showToast("Error: " + e.message); }
-    }
-
-    async function removeCredentials() {
-      if (!confirm("Remove credentials? Users will no longer be able to log in to this app.")) return;
-      try {
-        const res = await authFetch(`/api/apps/${currentEditAppId}/credentials/delete`, { method: "POST" });
-        if (!res.ok) { const d = await safeJson(res); throw new Error(d.error); }
-        showToast("Credentials removed");
-        closeEditModal();
-        loadApps();
-      } catch (e) { showToast("Error: " + e.message); }
-    }
-
-    async function deleteAppAction(appId) {
-      const title = appsById[appId]?.title || "this app";
-      if (!confirm(`Delete "${title}"? This will permanently remove the app and all its data.`)) return;
-      try {
-        const res = await authFetch(`/api/apps/${appId}/delete`, { method: "POST" });
-        if (!res.ok) { const d = await safeJson(res); throw new Error(d.error); }
-        showToast("App deleted");
-        loadApps();
-      } catch (e) { showToast("Error: " + e.message); }
-    }
-
     async function copyMagicLink(appId) {
       try {
         const res = await authFetch(`/api/apps/${appId}/magic-link`, {
@@ -458,31 +304,16 @@
 
       container.innerHTML = '<div class="grid">' + cachedApps.map(a => {
         const desc = a.description ? `<div class="description">${escapeHtml(a.description)}</div>` : '';
-        const revealed = revealedPasswords.has(a.id);
-        const creds = a.cred_username
-          ? `<div class="creds">
-              <div class="creds-info">
-                ${escapeHtml(a.cred_username)}
-                <br>
-                ${revealed
-                  ? escapeHtml(a.cred_password)
-                  : '<span class="pass-hidden">••••••••</span>'}
-              </div>
-              <button class="creds-toggle" data-action="reveal" data-id="${a.id}">${revealed ? 'Hide' : 'Show'}</button>
-            </div>`
+        const magicBtn = a.cred_username
+          ? `<button class="btn-primary" data-action="magic" data-id="${a.id}">Copy Magic Link</button>`
           : '';
         return `<div class="card">
-          <a class="card-link" href="/apps/${a.id}">
+          <a class="card-link" href="/dashboard/apps/${a.id}">
             <h3>${escapeHtml(a.title)}</h3>
             <div class="meta">${escapeHtml(a.created_at)}</div>
             ${desc}
           </a>
-          ${creds}
-          <div class="card-actions">
-            <button class="btn-primary" data-action="edit" data-id="${a.id}">Edit</button>
-            ${a.cred_username ? `<button class="btn-primary" data-action="magic" data-id="${a.id}">Copy Magic Link</button>` : ''}
-            <button class="btn-danger" data-action="delete" data-id="${a.id}">Delete</button>
-          </div>
+          ${magicBtn ? `<div class="card-actions">${magicBtn}</div>` : ''}
         </div>`;
       }).join("") + '</div>';
     }
@@ -496,9 +327,6 @@
           throw new Error(data.error || "Failed to load apps");
         }
         cachedApps = await safeJson(res);
-
-        appsById = {};
-        cachedApps.forEach(a => { appsById[a.id] = a; });
         renderApps();
       } catch (e) {
         if (e.message !== "Unauthorized") {
@@ -520,8 +348,30 @@
       }
 
       btn.disabled = true;
-      status.textContent = "Generating app... this may take a minute.";
       status.className = "generate-status";
+      status.innerHTML = `<div class="progress-stages">
+        <span class="progress-stage active" id="stage-prd">PRD</span>
+        <span class="progress-stage" id="stage-erd">ERD</span>
+        <span class="progress-stage" id="stage-build">Building</span>
+        <span class="progress-stage" id="stage-done">Complete</span>
+      </div>`;
+
+      function setStage(activeId) {
+        const stages = ["stage-prd", "stage-erd", "stage-build", "stage-done"];
+        let pastActive = true;
+        for (const id of stages) {
+          const el = document.getElementById(id);
+          if (!el) continue;
+          if (id === activeId) {
+            el.className = "progress-stage active";
+            pastActive = false;
+          } else if (pastActive) {
+            el.className = "progress-stage done";
+          } else {
+            el.className = "progress-stage";
+          }
+        }
+      }
 
       try {
         const res = await authFetch("/api/apps", {
@@ -529,33 +379,68 @@
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ title: title || undefined, body }),
         });
+
         if (!res.ok) {
-          const data = await safeJson(res);
-          throw new Error(data.error || "Generation failed");
+          const text = await res.text();
+          let errMsg = "Generation failed";
+          try { errMsg = JSON.parse(text).error || errMsg; } catch {}
+          throw new Error(errMsg);
         }
-        const data = await safeJson(res);
-        const { appId, credentials } = data;
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = "";
+        let done = false;
+
+        while (!done) {
+          const result = await reader.read();
+          if (result.done) { done = true; break; }
+          buf += decoder.decode(result.value, { stream: true });
+          const lines = buf.split("\n");
+          buf = lines.pop() || "";
+          let evtType = "";
+          for (const line of lines) {
+            if (line.startsWith("event: ")) {
+              evtType = line.slice(7).trim();
+            } else if (line.startsWith("data: ")) {
+              try {
+                const ev = JSON.parse(line.slice(6));
+                if (evtType === "error" || ev.step === "error") {
+                  throw new Error(ev.message || "Generation failed");
+                }
+                if (ev.step === "prd" || evtType === "prd") setStage("stage-prd");
+                if (ev.step === "prd_complete" || evtType === "prd_complete") setStage("stage-erd");
+                if (ev.step === "erd" || evtType === "erd") setStage("stage-erd");
+                if (ev.step === "erd_complete" || evtType === "erd_complete") setStage("stage-build");
+                if (ev.step === "generating" || evtType === "generating") setStage("stage-build");
+                if (ev.step === "complete" || evtType === "complete") {
+                  setStage("stage-done");
+                  // Mark all stages as done
+                  document.querySelectorAll(".progress-stage").forEach(el => el.className = "progress-stage done");
+                  const box = document.createElement("div");
+                  box.className = "success-box";
+                  box.innerHTML = `<h3>App generated!</h3>
+                    <div class="cred-line"><strong>Username:</strong> ${escapeHtml(ev.credentials?.username || "")}</div>
+                    <div class="cred-line"><strong>Password:</strong> ${escapeHtml(ev.credentials?.password || "")}</div>
+                    <p style="margin-top:0.5rem"><a href="/apps/${ev.appId}">Open app &rarr;</a> | <a href="/dashboard/apps/${ev.appId}">App detail &rarr;</a></p>`;
+                  status.appendChild(box);
+                  btn.disabled = false;
+                  loadApps();
+                  return;
+                }
+              } catch (pe) {
+                if (pe.message && pe.message !== "Generation failed") throw pe;
+              }
+            }
+          }
+        }
         btn.disabled = false;
-        status.className = "generate-status";
-        status.innerHTML = "";
-        const box = document.createElement("div");
-        box.className = "success-box";
-        box.innerHTML = `<h3>App generated!</h3>
-          <div class="cred-line"><strong>Username:</strong> ${escapeHtml(credentials.username)}</div>
-          <div class="cred-line"><strong>Password:</strong> ${escapeHtml(credentials.password)}</div>
-          <p style="margin-top:0.5rem"><a href="/apps/${appId}">Open app &rarr;</a></p>`;
-        status.appendChild(box);
-        loadApps();
       } catch (e) {
+        status.innerHTML = "";
         status.textContent = e.message;
         status.className = "generate-status error";
         btn.disabled = false;
       }
-    });
-
-    // Close modal on overlay click
-    document.getElementById("edit-modal").addEventListener("click", (e) => {
-      if (e.target === e.currentTarget) closeEditModal();
     });
 
     // Event delegation for card action buttons
@@ -565,12 +450,7 @@
       e.preventDefault();
       e.stopPropagation();
       const id = btn.dataset.id;
-      switch (btn.dataset.action) {
-        case "edit": openEditModal(id); break;
-        case "magic": copyMagicLink(id); break;
-        case "delete": deleteAppAction(id); break;
-        case "reveal": togglePassword(id); break;
-      }
+      if (btn.dataset.action === "magic") copyMagicLink(id);
     });
 
     loadApps();

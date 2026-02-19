@@ -1,6 +1,7 @@
 import { Hono } from "@hono/hono";
 import type { Context } from "@hono/hono";
 import Anthropic from "@anthropic-ai/sdk";
+import OpenAI from "openai";
 import {
   getApp,
   getAllAppSchemas,
@@ -16,56 +17,65 @@ import {
 } from "./db.ts";
 
 // Map short names to actual model IDs
-const MODEL_MAP: Record<string, string> = {
+export const MODEL_MAP: Record<string, string> = {
   haiku: "claude-haiku-4-5-20251001",
   sonnet: "claude-sonnet-4-5-20250929",
   opus: "claude-opus-4-6",
+  "gpt-4o": "gpt-4o",
 };
 
-function resolveModel(name?: string | null): string {
+export function resolveModel(name?: string | null): string {
   if (!name) return MODEL_MAP.sonnet;
-  if (name.startsWith("claude-")) return name;
+  if (name.startsWith("claude-") || name.startsWith("gpt-") || name.startsWith("o1") || name.startsWith("o3")) return name;
   return MODEL_MAP[name.toLowerCase()] ?? MODEL_MAP.sonnet;
 }
 
-export function createChatRoutes(client: Anthropic): Hono {
-  const chat = new Hono();
+function resolveChatModel(name?: string | null): string {
+  if (!name) return "gpt-4o";
+  if (name.startsWith("claude-") || name.startsWith("gpt-") || name.startsWith("o1") || name.startsWith("o3")) return name;
+  return MODEL_MAP[name.toLowerCase()] ?? "gpt-4o";
+}
 
-  // Build a data-aware system prompt for an app — includes ALL data up to a reasonable limit
-  function buildSystemContext(
-    appId: string,
-    appTitle: string,
-    customSystem?: string | null,
-  ): string {
-    const schemas = getAllAppSchemas(appId);
-    let context = customSystem ||
-      `You are an intelligent AI assistant embedded in "${appTitle}". You have full access to the app's live data. Provide specific, data-driven answers. Be concise and insightful.`;
+function getModelProvider(model: string): "anthropic" | "openai" {
+  return (model.startsWith("gpt-") || model.startsWith("o1") || model.startsWith("o3"))
+    ? "openai" : "anthropic";
+}
 
-    if (schemas.length > 0) {
-      context += "\n\nDATA CONTEXT — the app has these tables:\n";
-      for (const schema of schemas) {
-        const cols = schema.columns
-          .map((c) => `${c.name} (${c.type})`)
-          .join(", ");
-        context += `\n  TABLE ${schema.tableName}: id (INTEGER), ${cols}`;
+// Build a data-aware system prompt for an app — includes ALL data up to a reasonable limit
+export function buildSystemContext(
+  appId: string,
+  appTitle: string,
+  customSystem?: string | null,
+): string {
+  const schemas = getAllAppSchemas(appId);
+  let context = customSystem ||
+    `You are an intelligent AI assistant embedded in "${appTitle}". You have full access to the app's live data. Provide specific, data-driven answers. Be concise and insightful.`;
 
-        try {
-          const ftn = getFullTableName(appId, schema.tableName);
-          const rows = getRows(ftn, 200, 0);
-          if (rows.length > 0) {
-            context += `\n    ALL DATA (${rows.length} rows): ${JSON.stringify(rows)}`;
-          } else {
-            context += `\n    (empty table)`;
-          }
-        } catch {
-          // table might not exist yet
+  if (schemas.length > 0) {
+    context += "\n\nDATA CONTEXT — the app has these tables:\n";
+    for (const schema of schemas) {
+      const cols = schema.columns
+        .map((c) => `${c.name} (${c.type})`)
+        .join(", ");
+      context += `\n  TABLE ${schema.tableName}: id (INTEGER), ${cols}`;
+
+      try {
+        const ftn = getFullTableName(appId, schema.tableName);
+        const rows = getRows(ftn, 200, 0);
+        if (rows.length > 0) {
+          context += `\n    ALL DATA (${rows.length} rows): ${JSON.stringify(rows)}`;
+        } else {
+          context += `\n    (empty table)`;
         }
+      } catch {
+        // table might not exist yet
       }
-      context +=
-        "\n\nIMPORTANT: Use the actual data above for analysis. Reference specific values, compute real aggregates, identify real trends. Never make up numbers.";
     }
+    context +=
+      "\n\nIMPORTANT: Use the actual data above for analysis. Reference specific values, compute real aggregates, identify real trends. Never make up numbers.";
+  }
 
-    context += `
+  context += `
 
 CHART RENDERING:
 When the user asks for a chart, visualization, or graph, return a Chart.js config block like this:
@@ -91,7 +101,43 @@ Rules:
 - You can include multiple \`\`\`chartjs blocks in one response for side-by-side comparisons
 - Make charts visually appealing: use colors, proper labels, titles, and legends`;
 
-    return context;
+  return context;
+}
+
+export function createChatRoutes(anthropicClient: Anthropic, openaiClient: OpenAI): Hono {
+  const chat = new Hono();
+
+  async function callLLM(
+    system: string,
+    messages: { role: "user" | "assistant"; content: string }[],
+    model: string,
+    temperature?: number,
+  ): Promise<string> {
+    if (getModelProvider(model) === "openai") {
+      const openaiMessages: OpenAI.ChatCompletionMessageParam[] = [
+        { role: "system", content: system },
+        ...messages.map((m) => ({ role: m.role as "user" | "assistant", content: m.content })),
+      ];
+      const response = await openaiClient.chat.completions.create({
+        model,
+        messages: openaiMessages,
+        max_tokens: 4096,
+        ...(temperature !== undefined ? { temperature } : {}),
+      });
+      return response.choices[0]?.message?.content ?? "";
+    } else {
+      const response = await anthropicClient.messages.create({
+        model,
+        max_tokens: 4096,
+        system,
+        messages,
+        ...(temperature !== undefined ? { temperature } : {}),
+      });
+      return response.content
+        .filter((b) => b.type === "text")
+        .map((b) => b.text)
+        .join("");
+    }
   }
 
   // === Handler functions (shared across route aliases) ===
@@ -168,22 +214,11 @@ Rules:
     }));
 
     const system = buildSystemContext(appId, app.title, convo.system_prompt);
-    const model = resolveModel(body.model || convo.model);
+    const model = resolveChatModel(body.model || convo.model);
     const temperature = body.temperature ?? convo.temperature ?? undefined;
 
     try {
-      const response = await client.messages.create({
-        model,
-        max_tokens: 4096,
-        system,
-        messages,
-        ...(temperature !== undefined ? { temperature } : {}),
-      });
-
-      const text = response.content
-        .filter((b) => b.type === "text")
-        .map((b) => b.text)
-        .join("");
+      const text = await callLLM(system, messages, model, temperature);
 
       addMessage(convId, "assistant", text);
 
@@ -229,24 +264,13 @@ Rules:
     }
 
     const system = buildSystemContext(appId, app.title, body.system);
-    const model = resolveModel(body.model);
+    const model = resolveChatModel(body.model);
     const temperature = body.temperature;
 
     try {
-      const response = await client.messages.create({
-        model,
-        max_tokens: 4096,
-        system,
-        messages,
-        ...(temperature !== undefined ? { temperature } : {}),
-      });
+      const text = await callLLM(system, messages, model, temperature);
 
-      const text = response.content
-        .filter((b) => b.type === "text")
-        .map((b) => b.text)
-        .join("");
-
-      return c.json({ role: "assistant", content: text, model });
+      return c.json({ role: "assistant", content: text, response: text, model });
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "Chat failed";
       return c.json({ error: msg }, 500);
@@ -286,11 +310,12 @@ Rules:
   chat.get("/api/models", (c) => {
     return c.json({
       models: [
+        { id: "gpt-4o", name: "GPT-4o", description: "Fast, capable — default for chat" },
         { id: "haiku", name: "Claude Haiku 4.5", description: "Fast, lightweight — good for simple Q&A" },
-        { id: "sonnet", name: "Claude Sonnet 4.5", description: "Balanced — good default for most tasks" },
+        { id: "sonnet", name: "Claude Sonnet 4.5", description: "Balanced — good for most tasks" },
         { id: "opus", name: "Claude Opus 4.6", description: "Most capable — best for complex analysis" },
       ],
-      default: "sonnet",
+      default: "gpt-4o",
     });
   });
 

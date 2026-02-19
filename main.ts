@@ -1,12 +1,13 @@
 import { Hono } from "@hono/hono";
 import { streamSSE } from "@hono/hono/streaming";
 import Anthropic from "@anthropic-ai/sdk";
+import OpenAI from "openai";
 import { load } from "@std/dotenv";
 import { verify } from "@hono/hono/jwt";
 import { getCookie } from "@hono/hono/cookie";
 import { loginHandler, logoutHandler, authMiddleware, requireRoot, requireAppAccess, generateMagicLinkToken, magicLinkHandler } from "./auth.ts";
-import { listAppsWithCredentials, getApp, deleteApp, updateAppCredentials, deleteAppCredentials, getAppCredentials, updateAppTitle, saveEditRequest, listEditRequests, listAllEditRequests, deleteEditRequest, saveUxLesson, listUxLessons, deleteUxLesson } from "./db.ts";
-import { generateApp, editApp, extractUxLesson, type EditProgressEvent } from "./generate.ts";
+import { listAppsWithCredentials, getApp, deleteApp, updateAppCredentials, deleteAppCredentials, getAppCredentials, updateAppTitle, updateAppPrd, updateAppErd, updateAppPocPlan, saveEditRequest, listEditRequests, listAllEditRequests, deleteEditRequest, saveUxLesson, listUxLessons, deleteUxLesson } from "./db.ts";
+import { generateApp, editApp, extractUxLesson, generatePrd, generateErd, regenerateApp, generatePocPlan, type EditProgressEvent } from "./generate.ts";
 import { crud } from "./crud.ts";
 import { createChatRoutes } from "./chat.ts";
 import { createAgentRoutes } from "./agents.ts";
@@ -20,6 +21,7 @@ for (const [k, v] of Object.entries(env)) {
 }
 
 const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
+const openaiClient = new OpenAI({ apiKey: env.OPENAI_API_KEY });
 
 type AppEnv = {
   Variables: {
@@ -88,6 +90,21 @@ app.get("/dashboard/apps/:appId", async (c) => {
   return c.html(html);
 });
 
+app.get("/dashboard/apps/:appId/prd", async (c) => {
+  const html = await Deno.readTextFile("static/app-prd.html");
+  return c.html(html);
+});
+
+app.get("/dashboard/apps/:appId/erd", async (c) => {
+  const html = await Deno.readTextFile("static/app-erd.html");
+  return c.html(html);
+});
+
+app.get("/dashboard/apps/:appId/poc-plan", async (c) => {
+  const html = await Deno.readTextFile("static/app-poc-plan.html");
+  return c.html(html);
+});
+
 // --- API routes: root only ---
 app.get("/api/apps", authMiddleware, requireRoot, (c) => {
   const apps = listAppsWithCredentials();
@@ -106,13 +123,32 @@ app.post("/api/apps", authMiddleware, requireRoot, async (c) => {
     return c.json({ error: "body (app description) is required" }, 400);
   }
 
-  try {
-    const result = await generateApp({ title: body.title, body: body.body }, client);
-    return c.json({ appId: result.appId, credentials: result.credentials });
-  } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : "App generation failed";
-    return c.json({ error: msg }, 500);
-  }
+  const title = body.title || body.body.split("\n")[0].replace(/^#+\s*/, "").slice(0, 100) || "Untitled App";
+  const description = body.body;
+
+  return streamSSE(c, async (stream) => {
+    try {
+      // Stage 1: Generate PRD
+      await stream.writeSSE({ event: "prd", data: JSON.stringify({ step: "prd", message: "Generating Product Requirements..." }) });
+      const prd = await generatePrd(description, title, client);
+      await stream.writeSSE({ event: "prd_complete", data: JSON.stringify({ step: "prd_complete", message: "PRD complete" }) });
+
+      // Stage 2: Generate ERD
+      await stream.writeSSE({ event: "erd", data: JSON.stringify({ step: "erd", message: "Generating Engineering Requirements..." }) });
+      const erd = await generateErd(prd, title, client);
+      await stream.writeSSE({ event: "erd_complete", data: JSON.stringify({ step: "erd_complete", message: "ERD complete" }) });
+
+      // Stage 3: Generate App
+      await stream.writeSSE({ event: "generating", data: JSON.stringify({ step: "generating", message: "Building app from requirements..." }) });
+      const result = await generateApp({ title, body: description, prd, erd }, client);
+
+      // Stage 4: Complete
+      await stream.writeSSE({ event: "complete", data: JSON.stringify({ step: "complete", appId: result.appId, credentials: result.credentials }) });
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "App generation failed";
+      await stream.writeSSE({ event: "error", data: JSON.stringify({ step: "error", message: msg }) });
+    }
+  });
 });
 
 app.post("/api/apps/:appId/edit", authMiddleware, requireAppAccess, async (c) => {
@@ -322,6 +358,124 @@ app.post("/api/apps/:appId/magic-link", authMiddleware, requireRoot, async (c) =
   return c.json({ url });
 });
 
+// --- Root-only: PRD/ERD/POC management ---
+app.post("/api/apps/:appId/prd", authMiddleware, requireRoot, async (c) => {
+  const appId = c.req.param("appId");
+  const record = getApp(appId);
+  if (!record) return c.json({ error: "App not found" }, 404);
+  let body: { prd?: string };
+  try { body = await c.req.json(); } catch { return c.json({ error: "Invalid JSON body" }, 400); }
+  if (body.prd === undefined) return c.json({ error: "prd is required" }, 400);
+  updateAppPrd(appId, body.prd);
+  return c.json({ ok: true });
+});
+
+app.post("/api/apps/:appId/erd", authMiddleware, requireRoot, async (c) => {
+  const appId = c.req.param("appId");
+  const record = getApp(appId);
+  if (!record) return c.json({ error: "App not found" }, 404);
+  let body: { erd?: string };
+  try { body = await c.req.json(); } catch { return c.json({ error: "Invalid JSON body" }, 400); }
+  if (body.erd === undefined) return c.json({ error: "erd is required" }, 400);
+  updateAppErd(appId, body.erd);
+  return c.json({ ok: true });
+});
+
+app.post("/api/apps/:appId/generate-prd", authMiddleware, requireRoot, async (c) => {
+  const appId = c.req.param("appId");
+  const record = getApp(appId);
+  if (!record) return c.json({ error: "App not found" }, 404);
+  try {
+    const prd = await generatePrd(record.description, record.title, client);
+    updateAppPrd(appId, prd);
+    return c.json({ ok: true, prd });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : "PRD generation failed";
+    return c.json({ error: msg }, 500);
+  }
+});
+
+app.post("/api/apps/:appId/generate-erd", authMiddleware, requireRoot, async (c) => {
+  const appId = c.req.param("appId");
+  const record = getApp(appId);
+  if (!record) return c.json({ error: "App not found" }, 404);
+  try {
+    // Auto-generate PRD first if none exists
+    let prd = record.prd;
+    let prdGenerated = false;
+    if (!prd) {
+      prd = await generatePrd(record.description, record.title, client);
+      updateAppPrd(appId, prd);
+      prdGenerated = true;
+    }
+    const erd = await generateErd(prd, record.title, client);
+    updateAppErd(appId, erd);
+    return c.json({ ok: true, erd, ...(prdGenerated ? { prd } : {}) });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : "ERD generation failed";
+    return c.json({ error: msg }, 500);
+  }
+});
+
+app.post("/api/apps/:appId/regenerate", authMiddleware, requireRoot, async (c) => {
+  const appId = c.req.param("appId");
+  const record = getApp(appId);
+  if (!record) return c.json({ error: "App not found" }, 404);
+
+  let body: { prd?: string; erd?: string } = {};
+  try { body = await c.req.json(); } catch { /* use stored values */ }
+
+  const prd = body.prd || record.prd;
+  const erd = body.erd || record.erd;
+  if (!prd || !erd) return c.json({ error: "Both PRD and ERD are required to regenerate" }, 400);
+
+  // Save any updated PRD/ERD
+  if (body.prd) updateAppPrd(appId, body.prd);
+  if (body.erd) updateAppErd(appId, body.erd);
+
+  return streamSSE(c, async (stream) => {
+    try {
+      await stream.writeSSE({ event: "generating", data: JSON.stringify({ step: "generating", message: "Regenerating app from PRD + ERD..." }) });
+      await regenerateApp(appId, prd, erd, client);
+      await stream.writeSSE({ event: "complete", data: JSON.stringify({ step: "complete", message: "App regenerated successfully" }) });
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "Regeneration failed";
+      await stream.writeSSE({ event: "error", data: JSON.stringify({ step: "error", message: msg }) });
+    }
+  });
+});
+
+app.get("/api/apps/:appId/poc-plan", authMiddleware, requireRoot, (c) => {
+  const appId = c.req.param("appId");
+  const record = getApp(appId);
+  if (!record) return c.json({ error: "App not found" }, 404);
+  return c.json({ poc_plan: record.poc_plan || "" });
+});
+
+app.post("/api/apps/:appId/poc-plan", authMiddleware, requireRoot, async (c) => {
+  const appId = c.req.param("appId");
+  const record = getApp(appId);
+  if (!record) return c.json({ error: "App not found" }, 404);
+  try {
+    const pocPlan = await generatePocPlan(appId, client);
+    return c.json({ ok: true, poc_plan: pocPlan });
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : "POC plan generation failed";
+    return c.json({ error: msg }, 500);
+  }
+});
+
+app.put("/api/apps/:appId/poc-plan", authMiddleware, requireRoot, async (c) => {
+  const appId = c.req.param("appId");
+  const record = getApp(appId);
+  if (!record) return c.json({ error: "App not found" }, 404);
+  let body: { poc_plan?: string };
+  try { body = await c.req.json(); } catch { return c.json({ error: "Invalid JSON body" }, 400); }
+  if (body.poc_plan === undefined) return c.json({ error: "poc_plan is required" }, 400);
+  updateAppPocPlan(appId, body.poc_plan);
+  return c.json({ ok: true });
+});
+
 // --- Per-app routes: open if no credentials, otherwise require auth ---
 import type { Context, Next } from "@hono/hono";
 
@@ -363,7 +517,7 @@ app.use("/api/apps/:appId/mcp-servers", openOrAuth);
 app.use("/api/models", authMiddleware);
 
 // --- LLM chat routes (structured conversations + stateless) ---
-app.route("/", createChatRoutes(client));
+app.route("/", createChatRoutes(client, openaiClient));
 
 // --- Agent routes ---
 app.route("/", createAgentRoutes(client));

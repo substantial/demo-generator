@@ -175,6 +175,35 @@
     }
     @keyframes spin { to { transform: rotate(360deg); } }
     .loading-page { text-align: center; padding: 4rem; color: var(--text-muted); }
+    .regen-progress {
+      margin-top: 0.5rem;
+      font-size: 0.85rem;
+      color: var(--text-secondary);
+    }
+    .doc-links {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      gap: 0.75rem;
+    }
+    .doc-link {
+      display: flex;
+      flex-direction: column;
+      padding: 0.75rem 1rem;
+      background: var(--surface-alt);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      text-decoration: none;
+      color: var(--text);
+      transition: border-color 0.15s, box-shadow 0.15s;
+    }
+    .doc-link:hover {
+      border-color: var(--accent);
+      box-shadow: 0 2px 8px var(--shadow);
+      text-decoration: none;
+    }
+    .doc-link .doc-title { font-weight: 600; font-size: 0.9rem; margin-bottom: 0.2rem; }
+    .doc-link .doc-status { font-size: 0.75rem; color: var(--text-muted); }
+    .doc-link .doc-status.has-content { color: var(--success-text); }
   </style>
 </head>
 <body>
@@ -207,6 +236,15 @@
       <h2>UX Lessons Learned</h2>
       <p style="font-size:0.8rem;color:var(--text-muted);margin-bottom:0.75rem">Rules extracted from edit requests — applied to all future app generation.</p>
       <div id="ux-lessons-content"></div>
+    </div>
+
+    <div class="section">
+      <h2>Requirements &amp; Build Plan</h2>
+      <div class="doc-links" id="doc-links"></div>
+      <div style="margin-top:0.75rem">
+        <button class="btn btn-danger" id="regenerate-btn">Regenerate App from PRD + ERD</button>
+        <div id="regen-status" class="regen-progress"></div>
+      </div>
     </div>
   </div>
 
@@ -322,6 +360,7 @@
         document.getElementById("app-title").value = appData.title;
         document.getElementById("open-app-link").href = "/apps/" + appId;
         renderCredentials();
+        loadDocLinks();
 
         const reqRes = await authFetch(`/api/apps/${appId}/edit-requests`);
         const requests = reqRes.ok ? await safeJson(reqRes) : [];
@@ -491,6 +530,98 @@
         renderUxLessons();
         showToast("Lesson deleted");
       } catch (e) { showToast("Error: " + e.message); }
+    });
+
+    // === Requirements & Build Plan links ===
+
+    function loadDocLinks() {
+      if (!appData) return;
+      const el = document.getElementById("doc-links");
+      const prdStatus = appData.prd ? "has-content" : "";
+      const erdStatus = appData.erd ? "has-content" : "";
+      const pocStatus = appData.poc_plan ? "has-content" : "";
+      el.innerHTML = `
+        <a class="doc-link" href="/dashboard/apps/${appId}/prd">
+          <span class="doc-title">PRD</span>
+          <span class="doc-status ${prdStatus}">${appData.prd ? "Saved" : "Not generated"}</span>
+        </a>
+        <a class="doc-link" href="/dashboard/apps/${appId}/erd">
+          <span class="doc-title">ERD</span>
+          <span class="doc-status ${erdStatus}">${appData.erd ? "Saved" : "Not generated"}</span>
+        </a>
+        <a class="doc-link" href="/dashboard/apps/${appId}/poc-plan">
+          <span class="doc-title">POC Build Plan</span>
+          <span class="doc-status ${pocStatus}">${appData.poc_plan ? "Saved" : "Not generated"}</span>
+        </a>`;
+    }
+
+    // Regenerate
+    document.getElementById("regenerate-btn").addEventListener("click", async () => {
+      if (!appData.prd || !appData.erd) {
+        showToast("Both PRD and ERD are required. Open them from the links above to generate.");
+        return;
+      }
+      if (!confirm("This will rebuild the entire app from the PRD and ERD, replacing current HTML and data. Continue?")) return;
+
+      const btn = document.getElementById("regenerate-btn");
+      const statusEl = document.getElementById("regen-status");
+      btn.disabled = true;
+      statusEl.textContent = "Starting regeneration...";
+      statusEl.style.color = "";
+
+      try {
+        const res = await authFetch(`/api/apps/${appId}/regenerate`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+        });
+
+        if (!res.ok) {
+          const text = await res.text();
+          let errMsg = "Regeneration failed";
+          try { errMsg = JSON.parse(text).error || errMsg; } catch {}
+          throw new Error(errMsg);
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = "";
+        let done = false;
+
+        while (!done) {
+          const result = await reader.read();
+          if (result.done) { done = true; break; }
+          buf += decoder.decode(result.value, { stream: true });
+          const lines = buf.split("\n");
+          buf = lines.pop() || "";
+          let evtType = "";
+          for (const line of lines) {
+            if (line.startsWith("event: ")) { evtType = line.slice(7).trim(); }
+            else if (line.startsWith("data: ")) {
+              try {
+                const ev = JSON.parse(line.slice(6));
+                if (evtType === "error" || ev.step === "error") {
+                  throw new Error(ev.message || "Regeneration failed");
+                }
+                if (ev.step === "complete") {
+                  statusEl.textContent = "Regeneration complete! Refresh the app to see changes.";
+                  statusEl.style.color = "var(--success-text)";
+                  btn.disabled = false;
+                  return;
+                }
+                statusEl.textContent = ev.message || "Working...";
+              } catch (pe) {
+                if (pe.message && pe.message !== "Regeneration failed") throw pe;
+              }
+            }
+          }
+        }
+        statusEl.textContent = "Regeneration complete!";
+        btn.disabled = false;
+      } catch (e) {
+        statusEl.textContent = "Error: " + e.message;
+        statusEl.style.color = "var(--danger)";
+        btn.disabled = false;
+      }
     });
 
     loadApp();
