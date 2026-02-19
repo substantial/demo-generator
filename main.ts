@@ -1,11 +1,12 @@
 import { Hono } from "@hono/hono";
+import { streamSSE } from "@hono/hono/streaming";
 import Anthropic from "@anthropic-ai/sdk";
 import { load } from "@std/dotenv";
 import { verify } from "@hono/hono/jwt";
 import { getCookie } from "@hono/hono/cookie";
 import { loginHandler, logoutHandler, authMiddleware, requireRoot, requireAppAccess, generateMagicLinkToken, magicLinkHandler } from "./auth.ts";
 import { listAppsWithCredentials, getApp, deleteApp, updateAppCredentials, deleteAppCredentials, getAppCredentials, updateAppTitle, saveEditRequest, listEditRequests, listAllEditRequests, deleteEditRequest, saveUxLesson, listUxLessons, deleteUxLesson } from "./db.ts";
-import { generateApp, editApp, extractUxLesson } from "./generate.ts";
+import { generateApp, editApp, extractUxLesson, type EditProgressEvent } from "./generate.ts";
 import { crud } from "./crud.ts";
 import { createChatRoutes } from "./chat.ts";
 import { createAgentRoutes } from "./agents.ts";
@@ -135,23 +136,26 @@ app.post("/api/apps/:appId/edit", authMiddleware, requireAppAccess, async (c) =>
     saveEditRequest(appId, username, body.description);
   }
 
-  // Execute the edit for all users
-  try {
-    await editApp(appId, body.description, client);
+  const description = body.description;
 
-    // Fire-and-forget: extract UX lesson from this edit
-    extractUxLesson(body.description, client).then((lesson) => {
-      if (lesson) {
-        saveUxLesson(lesson, appId, body.description);
-        console.log(`[ux-lessons] Learned: "${lesson}"`);
-      }
-    }).catch(() => {});
+  return streamSSE(c, async (stream) => {
+    try {
+      await editApp(appId, description, client, async (event: EditProgressEvent) => {
+        await stream.writeSSE({ event: event.step, data: JSON.stringify(event) });
+      });
 
-    return c.json({ ok: true, updated: "app" });
-  } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : "Edit failed";
-    return c.json({ error: msg }, 500);
-  }
+      // Fire-and-forget: extract UX lesson from this edit
+      extractUxLesson(description, client).then((lesson) => {
+        if (lesson) {
+          saveUxLesson(lesson, appId, description);
+          console.log(`[ux-lessons] Learned: "${lesson}"`);
+        }
+      }).catch(() => {});
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "Edit failed";
+      await stream.writeSSE({ event: "error", data: JSON.stringify({ step: "error", message: msg }) });
+    }
+  });
 });
 
 // --- Root-only: view edit requests ---
@@ -474,14 +478,14 @@ app.get("/apps/:appId", async (c) => {
     return d;
   }
 
-  function showTyping(){
+  function showTyping(text){
     let t=document.getElementById('__chat_typing');
     if(!t){
       t=document.createElement('div');
       t.id='__chat_typing';
-      t.innerHTML='<span>.</span><span>.</span><span>.</span> Applying changes';
       messages.appendChild(t);
     }
+    t.innerHTML='<span>.</span><span>.</span><span>.</span> '+(text||'Applying changes');
     t.classList.add('active');
     messages.scrollTop=messages.scrollHeight;
   }
@@ -499,7 +503,7 @@ app.get("/apps/:appId", async (c) => {
     input.style.height='auto';
 
     addMsg(text,'user');
-    showTyping();
+    showTyping('Starting...');
 
     try{
       const res=await fetch('/api/apps/'+appId+'/edit',{
@@ -507,13 +511,53 @@ app.get("/apps/:appId", async (c) => {
         headers:{'Content-Type':'application/json'},
         body:JSON.stringify({description:text})
       });
-      hideTyping();
       if(!res.ok){
-        const data=await res.json();
-        throw new Error(data.error||'Edit failed');
+        hideTyping();
+        var errText=await res.text();
+        var errMsg='Edit failed';
+        try{errMsg=JSON.parse(errText).error||errMsg;}catch(e2){}
+        throw new Error(errMsg);
       }
+      var reader=res.body.getReader();
+      var decoder=new TextDecoder();
+      var buf='';
+      var done=false;
+      while(!done){
+        var chunk=reader.read();
+        var result=await chunk;
+        if(result.done){done=true;break;}
+        buf+=decoder.decode(result.value,{stream:true});
+        var lines=buf.split('\\n');
+        buf=lines.pop()||'';
+        var evtType='';
+        for(var i=0;i<lines.length;i++){
+          var line=lines[i];
+          if(line.indexOf('event: ')===0){evtType=line.slice(7).trim();}
+          else if(line.indexOf('data: ')===0){
+            try{
+              var ev=JSON.parse(line.slice(6));
+              if(evtType==='error'||ev.step==='error'){
+                hideTyping();
+                addMsg('Error: '+ev.message,'error');
+                busy=false;sendBtn.disabled=false;input.focus();
+                return;
+              }
+              if(ev.step==='complete'){
+                hideTyping();
+                addMsg('${successMsg}','assistant');
+                setTimeout(function(){window.location.reload();},1500);
+                return;
+              }
+              var label=ev.message||'Working...';
+              if(ev.tokens){label=ev.message+' ('+ev.tokens+' tokens)';}
+              showTyping(label);
+            }catch(pe){}
+          }
+        }
+      }
+      hideTyping();
       addMsg('${successMsg}','assistant');
-      setTimeout(()=>window.location.reload(),1500);
+      setTimeout(function(){window.location.reload();},1500);
     }catch(e){
       hideTyping();
       addMsg('Error: '+e.message,'error');

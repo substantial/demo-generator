@@ -397,6 +397,14 @@ function extractJson(raw: string): string {
   return cleaned;
 }
 
+export interface EditProgressEvent {
+  step: "analyzing" | "generating" | "applying" | "complete" | "error";
+  message: string;
+  tokens?: number;
+}
+
+export type EditProgressCallback = (event: EditProgressEvent) => void | Promise<void>;
+
 interface ParsedResponse {
   tables: TableDef[];
   html: string;
@@ -716,117 +724,134 @@ export async function editApp(
   appId: string,
   description: string,
   client: Anthropic,
+  onProgress?: EditProgressCallback,
 ): Promise<boolean> {
   console.log(
     `[generate] Editing app ${appId}: "${description.slice(0, 100)}"`,
   );
 
-  const app = getApp(appId);
-  if (!app) throw new Error("App not found");
+  try {
+    const app = getApp(appId);
+    if (!app) throw new Error("App not found");
 
-  const schemas = getAllAppSchemas(appId);
-  console.log(
-    `[generate] Current schema: ${schemas.length} table(s)`,
-  );
-  const schemaDescription = schemas
-    .map(
-      (s) =>
-        `Table "${s.tableName}": ${JSON.stringify(s.columns)}`,
-    )
-    .join("\n");
-
-  const uxLessonsBlock = buildUxLessonsBlock();
-  const editSystemPrompt = EDIT_SYSTEM_PROMPT + uxLessonsBlock;
-
-  console.log(`[generate] Sending streaming edit request to Claude...`);
-  if (uxLessonsBlock) {
-    console.log(`[generate] Injecting UX lessons into edit system prompt`);
-  }
-  const startTime = Date.now();
-
-  const stream = client.messages.stream({
-    model: "claude-opus-4-6",
-    max_tokens: 64000,
-    system: editSystemPrompt,
-    messages: [
-      {
-        role: "user",
-        content: `Current app HTML:\n${app.html}\n\nCurrent database schema:\n${schemaDescription}\n\nRequested changes:\n${description}`,
-      },
-    ],
-  });
-
-  let lastLoggedTokens = 0;
-  stream.on("text", () => {
-    const current = stream.currentMessage?.usage?.output_tokens ?? 0;
-    if (current - lastLoggedTokens >= 2000) {
-      console.log(`[generate] Streaming edit... ${current} output tokens so far`);
-      lastLoggedTokens = current;
-    }
-  });
-
-  const response = await stream.finalMessage();
-
-  const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-  console.log(`[generate] Claude responded in ${elapsed}s`);
-  console.log(`[generate] Stop reason: ${response.stop_reason}`);
-  console.log(
-    `[generate] Usage: input=${response.usage.input_tokens} output=${response.usage.output_tokens}`,
-  );
-
-  const wasTruncated = response.stop_reason === "max_tokens";
-  if (wasTruncated) {
-    console.warn(
-      `[generate] WARNING: Edit response was truncated. Will attempt JSON repair.`,
-    );
-  }
-
-  const block = response.content[0];
-  if (block.type !== "text") {
-    console.error(
-      `[generate] Unexpected content block type: ${block.type}`,
-    );
-    throw new Error(
-      `Unexpected response type from Claude: ${block.type}`,
-    );
-  }
-
-  const parsed = parseResponse(block.text, "editApp", wasTruncated);
-
-  if (parsed.newTables && parsed.newTables.length > 0) {
+    const schemas = getAllAppSchemas(appId);
     console.log(
-      `[generate] Creating ${parsed.newTables.length} new table(s): ${parsed.newTables.join(", ")}`,
+      `[generate] Current schema: ${schemas.length} table(s)`,
     );
-    const newTableDefs = parsed.tables.filter((t) =>
-      parsed.newTables!.includes(t.name),
-    );
-    createAppTables(appId, newTableDefs);
-  }
+    const schemaDescription = schemas
+      .map(
+        (s) =>
+          `Table "${s.tableName}": ${JSON.stringify(s.columns)}`,
+      )
+      .join("\n");
 
-  if (parsed.newColumns) {
-    for (const [tableName, cols] of Object.entries(
-      parsed.newColumns,
-    )) {
-      console.log(
-        `[generate] Adding ${cols.length} column(s) to "${tableName}": ${cols.map((c) => c.name).join(", ")}`,
+    if (onProgress) await onProgress({ step: "analyzing", message: "Analyzing app and schema..." });
+
+    const uxLessonsBlock = buildUxLessonsBlock();
+    const editSystemPrompt = EDIT_SYSTEM_PROMPT + uxLessonsBlock;
+
+    console.log(`[generate] Sending streaming edit request to Claude...`);
+    if (uxLessonsBlock) {
+      console.log(`[generate] Injecting UX lessons into edit system prompt`);
+    }
+    const startTime = Date.now();
+
+    if (onProgress) await onProgress({ step: "generating", message: "Generating updated code..." });
+
+    const stream = client.messages.stream({
+      model: "claude-opus-4-6",
+      max_tokens: 64000,
+      system: editSystemPrompt,
+      messages: [
+        {
+          role: "user",
+          content: `Current app HTML:\n${app.html}\n\nCurrent database schema:\n${schemaDescription}\n\nRequested changes:\n${description}`,
+        },
+      ],
+    });
+
+    let lastLoggedTokens = 0;
+    stream.on("text", () => {
+      const current = stream.currentMessage?.usage?.output_tokens ?? 0;
+      if (current - lastLoggedTokens >= 500) {
+        console.log(`[generate] Streaming edit... ${current} output tokens so far`);
+        lastLoggedTokens = current;
+        // Fire-and-forget: Anthropic SDK callback is synchronous, can't await
+        onProgress?.({ step: "generating", message: "Generating updated code...", tokens: current });
+      }
+    });
+
+    const response = await stream.finalMessage();
+
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    console.log(`[generate] Claude responded in ${elapsed}s`);
+    console.log(`[generate] Stop reason: ${response.stop_reason}`);
+    console.log(
+      `[generate] Usage: input=${response.usage.input_tokens} output=${response.usage.output_tokens}`,
+    );
+
+    const wasTruncated = response.stop_reason === "max_tokens";
+    if (wasTruncated) {
+      console.warn(
+        `[generate] WARNING: Edit response was truncated. Will attempt JSON repair.`,
       );
-      for (const col of cols) {
-        addColumnToTable(appId, tableName, col);
+    }
+
+    const block = response.content[0];
+    if (block.type !== "text") {
+      console.error(
+        `[generate] Unexpected content block type: ${block.type}`,
+      );
+      throw new Error(
+        `Unexpected response type from Claude: ${block.type}`,
+      );
+    }
+
+    if (onProgress) await onProgress({ step: "applying", message: "Applying changes..." });
+
+    const parsed = parseResponse(block.text, "editApp", wasTruncated);
+
+    if (parsed.newTables && parsed.newTables.length > 0) {
+      console.log(
+        `[generate] Creating ${parsed.newTables.length} new table(s): ${parsed.newTables.join(", ")}`,
+      );
+      const newTableDefs = parsed.tables.filter((t) =>
+        parsed.newTables!.includes(t.name),
+      );
+      createAppTables(appId, newTableDefs);
+    }
+
+    if (parsed.newColumns) {
+      for (const [tableName, cols] of Object.entries(
+        parsed.newColumns,
+      )) {
+        console.log(
+          `[generate] Adding ${cols.length} column(s) to "${tableName}": ${cols.map((c) => c.name).join(", ")}`,
+        );
+        for (const col of cols) {
+          addColumnToTable(appId, tableName, col);
+        }
       }
     }
+
+    if (parsed.seedData) {
+      console.log(
+        `[generate] Inserting seed data for edited app...`,
+      );
+      insertSeedData(appId, parsed.seedData);
+    }
+
+    const html = parsed.html.replace(/\{\{APP_ID\}\}/g, appId);
+    updateAppHtml(appId, html);
+    console.log(`[generate] App updated successfully`);
+
+    if (onProgress) await onProgress({ step: "complete", message: "Edit complete" });
+
+    return true;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Edit failed";
+    onProgress?.({ step: "error", message: msg });
+    throw err;
   }
-
-  if (parsed.seedData) {
-    console.log(
-      `[generate] Inserting seed data for edited app...`,
-    );
-    insertSeedData(appId, parsed.seedData);
-  }
-
-  const html = parsed.html.replace(/\{\{APP_ID\}\}/g, appId);
-  updateAppHtml(appId, html);
-  console.log(`[generate] App updated successfully`);
-
-  return true;
 }
 
