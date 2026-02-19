@@ -20,8 +20,8 @@ for (const [k, v] of Object.entries(env)) {
   Deno.env.set(k, v);
 }
 
-const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
-const openaiClient = new OpenAI({ apiKey: env.OPENAI_API_KEY });
+const client = new Anthropic();
+const openaiClient = new OpenAI();
 
 type AppEnv = {
   Variables: {
