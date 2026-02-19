@@ -12,16 +12,17 @@ import { crud } from "./crud.ts";
 import { createChatRoutes } from "./chat.ts";
 import { createAgentRoutes } from "./agents.ts";
 
-// Load environment variables from .env file
+// Load environment variables from .env file (local dev)
 const env = await load();
 
-// Set env vars so modules can read them via Deno.env
+// Merge .env values into Deno.env (no-op in production where .env doesn't exist)
 for (const [k, v] of Object.entries(env)) {
   Deno.env.set(k, v);
 }
 
-const client = new Anthropic();
-const openaiClient = new OpenAI();
+// Use Deno.env.get() so both .env (local) and Fly secrets (production) work
+const client = new Anthropic({ apiKey: Deno.env.get("ANTHROPIC_API_KEY")! });
+const openaiClient = new OpenAI({ apiKey: Deno.env.get("OPENAI_API_KEY")! });
 
 type AppEnv = {
   Variables: {
