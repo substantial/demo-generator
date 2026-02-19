@@ -12,17 +12,27 @@ import { crud } from "./crud.ts";
 import { createChatRoutes } from "./chat.ts";
 import { createAgentRoutes } from "./agents.ts";
 
-// Load environment variables from .env file (local dev)
-const env = await load();
-
-// Merge .env values into Deno.env (no-op in production where .env doesn't exist)
-for (const [k, v] of Object.entries(env)) {
-  Deno.env.set(k, v);
+// Load environment variables from .env file (local dev only)
+try {
+  const env = await load();
+  for (const [k, v] of Object.entries(env)) {
+    Deno.env.set(k, v);
+  }
+  console.log(`[startup] Loaded ${Object.keys(env).length} vars from .env`);
+} catch {
+  console.log("[startup] No .env file found, using system environment");
 }
 
-// Use Deno.env.get() so both .env (local) and Fly secrets (production) work
-const client = new Anthropic({ apiKey: Deno.env.get("ANTHROPIC_API_KEY")! });
-const openaiClient = new OpenAI({ apiKey: Deno.env.get("OPENAI_API_KEY")! });
+const anthropicKey = Deno.env.get("ANTHROPIC_API_KEY");
+const openaiKey = Deno.env.get("OPENAI_API_KEY");
+console.log(`[startup] ANTHROPIC_API_KEY: ${anthropicKey ? "set (" + anthropicKey.slice(0, 10) + "...)" : "MISSING"}`);
+console.log(`[startup] OPENAI_API_KEY: ${openaiKey ? "set (" + openaiKey.slice(0, 10) + "...)" : "MISSING"}`);
+
+if (!anthropicKey) throw new Error("ANTHROPIC_API_KEY is not set");
+if (!openaiKey) throw new Error("OPENAI_API_KEY is not set");
+
+const client = new Anthropic({ apiKey: anthropicKey });
+const openaiClient = new OpenAI({ apiKey: openaiKey });
 
 type AppEnv = {
   Variables: {
