@@ -572,182 +572,25 @@ app.get("/apps/:appId", async (c) => {
   }
 
   const isRoot = role === "root";
+
+  // Embed mode: serve raw app HTML for iframe loading
+  if (c.req.query("embed") === "1") {
+    return c.html(record.html);
+  }
+
+  // Serve wrapper page with iframe + persistent chat widget
+  let wrapper = await Deno.readTextFile("static/widget-wrapper.html");
   const headerText = isRoot ? 'Edit this app' : 'Suggest changes';
-  const systemMsg = isRoot
-    ? "Describe changes you'd like to make to this app."
-    : 'Suggest changes to this app. Your ideas will be saved for review.';
-  const successMsg = 'Changes applied! Refresh the page to see changes.';
-  const chatWidget = `
-<style>
-#__chat_toggle{position:fixed;bottom:20px;right:20px;z-index:9999;width:52px;height:52px;border-radius:50%;background:#4a90d9;color:#fff;border:none;font-size:1.4rem;cursor:pointer;box-shadow:0 2px 12px rgba(0,0,0,0.3);display:flex;align-items:center;justify-content:center;transition:transform .15s}
-#__chat_toggle:hover{transform:scale(1.08)}
-#__chat_panel{display:none;position:fixed;bottom:80px;right:20px;z-index:10000;width:380px;max-width:calc(100vw - 40px);height:480px;max-height:calc(100vh - 100px);background:#fff;border-radius:12px;box-shadow:0 8px 30px rgba(0,0,0,0.25);flex-direction:column;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;overflow:hidden}
-#__chat_panel.open{display:flex}
-#__chat_header{padding:12px 16px;background:#4a90d9;color:#fff;font-weight:600;font-size:.95rem;display:flex;justify-content:space-between;align-items:center;flex-shrink:0}
-#__chat_header button{background:none;border:none;color:#fff;font-size:1.2rem;cursor:pointer;padding:0 4px;opacity:.8}
-#__chat_header button:hover{opacity:1}
-#__chat_messages{flex:1;overflow-y:auto;padding:12px 16px;display:flex;flex-direction:column;gap:10px}
-.__chat_msg{max-width:85%;padding:8px 12px;border-radius:12px;font-size:.875rem;line-height:1.4;word-wrap:break-word}
-.__chat_msg.user{align-self:flex-end;background:#4a90d9;color:#fff;border-bottom-right-radius:4px}
-.__chat_msg.assistant{align-self:flex-start;background:#f0f0f0;color:#333;border-bottom-left-radius:4px}
-.__chat_msg.system{align-self:center;background:none;color:#888;font-size:.8rem;font-style:italic;padding:4px 0}
-.__chat_msg.error{align-self:center;background:#fee;color:#d32f2f;font-size:.8rem;padding:6px 10px;border-radius:6px}
-#__chat_typing{display:none;align-self:flex-start;padding:8px 12px;background:#f0f0f0;border-radius:12px;border-bottom-left-radius:4px;font-size:.875rem;color:#888}
-#__chat_typing.active{display:block}
-#__chat_typing span{display:inline-block;animation:__dots 1.4s infinite}
-#__chat_typing span:nth-child(2){animation-delay:.2s}
-#__chat_typing span:nth-child(3){animation-delay:.4s}
-@keyframes __dots{0%,80%,100%{opacity:.3}40%{opacity:1}}
-#__chat_input_area{display:flex;gap:8px;padding:12px;border-top:1px solid #e0e0e0;flex-shrink:0}
-#__chat_input{flex:1;padding:8px 12px;border:1px solid #ccc;border-radius:20px;font-size:.875rem;outline:none;resize:none;max-height:80px;font-family:inherit;line-height:1.4}
-#__chat_input:focus{border-color:#4a90d9}
-#__chat_send{width:36px;height:36px;border-radius:50%;background:#4a90d9;color:#fff;border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;align-self:flex-end}
-#__chat_send:hover{background:#357abd}
-#__chat_send:disabled{background:#ccc;cursor:not-allowed}
-</style>
-<div id="__chat_panel">
-  <div id="__chat_header">
-    <span>${headerText}</span>
-    <button onclick="document.getElementById('__chat_panel').classList.remove('open')" title="Close">&times;</button>
-  </div>
-  <div id="__chat_messages">
-    <div class="__chat_msg system">${systemMsg}</div>
-  </div>
-  <div id="__chat_input_area">
-    <textarea id="__chat_input" rows="1" placeholder="${isRoot ? 'Describe a change...' : 'Suggest a change...'}"></textarea>
-    <button id="__chat_send" title="Send">&#9654;</button>
-  </div>
-</div>
-<button id="__chat_toggle" title="${headerText}">&#9998;</button>
-<script>
-(function(){
-  const panel=document.getElementById('__chat_panel');
-  const toggle=document.getElementById('__chat_toggle');
-  const messages=document.getElementById('__chat_messages');
-  const input=document.getElementById('__chat_input');
-  const sendBtn=document.getElementById('__chat_send');
-  const appId='${appId}';
-  let busy=false;
-
-  toggle.addEventListener('click',()=>{
-    panel.classList.toggle('open');
-    if(panel.classList.contains('open'))input.focus();
-  });
-
-  function addMsg(text,cls){
-    const d=document.createElement('div');
-    d.className='__chat_msg '+cls;
-    d.textContent=text;
-    messages.appendChild(d);
-    messages.scrollTop=messages.scrollHeight;
-    return d;
-  }
-
-  function showTyping(text){
-    let t=document.getElementById('__chat_typing');
-    if(!t){
-      t=document.createElement('div');
-      t.id='__chat_typing';
-      messages.appendChild(t);
-    }
-    t.innerHTML='<span>.</span><span>.</span><span>.</span> '+(text||'Applying changes');
-    t.classList.add('active');
-    messages.scrollTop=messages.scrollHeight;
-  }
-  function hideTyping(){
-    const t=document.getElementById('__chat_typing');
-    if(t)t.classList.remove('active');
-  }
-
-  async function send(){
-    const text=input.value.trim();
-    if(!text||busy)return;
-    busy=true;
-    sendBtn.disabled=true;
-    input.value='';
-    input.style.height='auto';
-
-    addMsg(text,'user');
-    showTyping('Starting...');
-
-    try{
-      const res=await fetch('/api/apps/'+appId+'/edit',{
-        method:'POST',
-        headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({description:text})
-      });
-      if(!res.ok){
-        hideTyping();
-        var errText=await res.text();
-        var errMsg='Edit failed';
-        try{errMsg=JSON.parse(errText).error||errMsg;}catch(e2){}
-        throw new Error(errMsg);
-      }
-      var reader=res.body.getReader();
-      var decoder=new TextDecoder();
-      var buf='';
-      var done=false;
-      while(!done){
-        var chunk=reader.read();
-        var result=await chunk;
-        if(result.done){done=true;break;}
-        buf+=decoder.decode(result.value,{stream:true});
-        var lines=buf.split('\\n');
-        buf=lines.pop()||'';
-        var evtType='';
-        for(var i=0;i<lines.length;i++){
-          var line=lines[i];
-          if(line.indexOf('event: ')===0){evtType=line.slice(7).trim();}
-          else if(line.indexOf('data: ')===0){
-            try{
-              var ev=JSON.parse(line.slice(6));
-              if(evtType==='error'||ev.step==='error'){
-                hideTyping();
-                addMsg('Error: '+ev.message,'error');
-                busy=false;sendBtn.disabled=false;input.focus();
-                return;
-              }
-              if(ev.step==='complete'){
-                hideTyping();
-                addMsg('${successMsg}','assistant');
-                setTimeout(function(){window.location.reload();},1500);
-                return;
-              }
-              var label=ev.message||'Working...';
-              if(ev.tokens){label=ev.message+' ('+ev.tokens+' tokens)';}
-              showTyping(label);
-            }catch(pe){}
-          }
-        }
-      }
-      hideTyping();
-      addMsg('${successMsg}','assistant');
-      setTimeout(function(){window.location.reload();},1500);
-    }catch(e){
-      hideTyping();
-      addMsg('Error: '+e.message,'error');
-      busy=false;
-      sendBtn.disabled=false;
-      input.focus();
-    }
-  }
-
-  sendBtn.addEventListener('click',send);
-  input.addEventListener('keydown',(e)=>{
-    if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send();}
-  });
-  input.addEventListener('input',()=>{
-    input.style.height='auto';
-    input.style.height=Math.min(input.scrollHeight,80)+'px';
-  });
-})();
-</script>`;
-
-  const html = record.html.replace(
-    /<\/body>/i,
-    chatWidget + "\n</body>",
-  );
-  return c.html(html);
+  const safeTitle = record.title.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  wrapper = wrapper
+    .replace(/\{\{APP_ID\}\}/g, appId)
+    .replace(/\{\{TITLE\}\}/g, safeTitle)
+    .replace(/\{\{HEADER_TEXT\}\}/g, headerText)
+    .replace(/\{\{SYSTEM_MSG\}\}/g, isRoot
+      ? "Describe changes you'd like. Send multiple messages &mdash; they'll queue and apply in order."
+      : 'Suggest changes to this app. Your ideas will be saved for review.')
+    .replace(/\{\{PLACEHOLDER\}\}/g, isRoot ? 'Describe a change...' : 'Suggest a change...');
+  return c.html(wrapper);
 });
 
 Deno.serve({ port: 8000, hostname: "0.0.0.0" }, app.fetch);

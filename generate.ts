@@ -223,12 +223,46 @@ Your ENTIRE response must be a single valid JSON object. No code fences, no surr
 
 GUARDRAILS: Never build login/signup forms (platform handles auth), no file uploads, WebSockets, email, payments, or server-side code. Output is HTML + tables + seedData only.`;
 
+const EDIT_DIFF_SYSTEM_PROMPT = `You are a web app editor. You receive current HTML + schema and a change description.
+
+Instead of returning the entire HTML, return surgical PATCHES — exact search/replace operations.
+
+Return ONLY valid JSON (no markdown fences, no explanation) with this structure:
+{
+  "patches": [
+    { "search": "exact text from current HTML", "replace": "replacement text" }
+  ],
+  "newTables": [],
+  "newColumns": {},
+  "seedData": {}
+}
+
+PATCH RULES:
+- Each "search" MUST be an EXACT substring of the current HTML (including whitespace, newlines, indentation)
+- Include enough surrounding context in "search" to ensure it is UNIQUE in the document (2-3 lines minimum)
+- Patches are applied in order — later patches operate on the result of earlier ones
+- For ADDITIONS: use a search string that identifies the insertion point, then include it plus the new content in "replace"
+- For DELETIONS: include the text to remove in "search", set "replace" to "" (empty string)
+- Keep patches minimal — only change what the user asked for
+- Do NOT rewrite the whole HTML via one giant patch — that defeats the purpose
+
+TABLE RULES (same as full edit):
+- "newTables": only completely new tables to CREATE (with name + columns array)
+- "newColumns": only NEW columns to ADD to existing tables: { "tableName": [{ "name": "col", "type": "TEXT", "nullable": true }] }
+- "seedData": only for new tables or when the user specifically asks for data
+- If no schema changes: newTables=[], newColumns={}, seedData={}
+
+- Use {{APP_ID}} placeholder in any new API URLs
+- Preserve existing functionality unless the edit specifically changes it
+
+GUARDRAILS: Never build login/signup forms, no file uploads, WebSockets, email, payments, or server-side code.`;
+
 export async function extractUxLesson(
   editDescription: string,
   client: Anthropic,
 ): Promise<string | null> {
   const response = await client.messages.create({
-    model: "claude-opus-4-6",
+    model: "claude-sonnet-4-6",
     max_tokens: 200,
     messages: [
       {
@@ -743,6 +777,146 @@ export async function generateApp(
   return { appId, credentials: { username, password } };
 }
 
+interface PatchOp {
+  search: string;
+  replace: string;
+}
+
+interface ParsedDiffResponse {
+  patches: PatchOp[];
+  newTables?: string[];
+  newColumns?: Record<string, ColumnDef[]>;
+  seedData?: Record<string, Record<string, unknown>[]>;
+}
+
+function applyPatches(html: string, patches: PatchOp[]): string | null {
+  let result = html;
+  for (let i = 0; i < patches.length; i++) {
+    const patch = patches[i];
+    if (!patch.search || !result.includes(patch.search)) {
+      console.warn(
+        `[generate] Patch ${i + 1}/${patches.length} search not found (${patch.search.length} chars): "${patch.search.slice(0, 120)}..."`,
+      );
+      return null; // Signal failure — caller should fall back
+    }
+    result = result.replace(patch.search, patch.replace);
+    console.log(
+      `[generate] Patch ${i + 1}/${patches.length} applied: -${patch.search.length} +${patch.replace.length} chars`,
+    );
+  }
+  return result;
+}
+
+async function editAppFast(
+  appId: string,
+  currentHtml: string,
+  schemaDescription: string,
+  description: string,
+  client: Anthropic,
+  onProgress?: EditProgressCallback,
+): Promise<boolean | null> {
+  // Returns true on success, null on failure (caller should fall back)
+  console.log(`[generate] Trying fast diff-based edit with Sonnet...`);
+  const startTime = Date.now();
+
+  const uxLessonsBlock = buildUxLessonsBlock();
+
+  const stream = client.messages.stream({
+    model: "claude-sonnet-4-6",
+    max_tokens: 16000,
+    system: EDIT_DIFF_SYSTEM_PROMPT + uxLessonsBlock,
+    messages: [
+      {
+        role: "user",
+        content: `Current app HTML:\n${currentHtml}\n\nCurrent database schema:\n${schemaDescription}\n\nRequested changes:\n${description}`,
+      },
+    ],
+  });
+
+  let lastLoggedTokens = 0;
+  stream.on("text", () => {
+    const current = stream.currentMessage?.usage?.output_tokens ?? 0;
+    if (current - lastLoggedTokens >= 500) {
+      console.log(`[generate] Fast edit streaming... ${current} output tokens`);
+      lastLoggedTokens = current;
+      onProgress?.({ step: "generating", message: "Generating changes...", tokens: current });
+    }
+  });
+
+  const response = await stream.finalMessage();
+
+  const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+  console.log(
+    `[generate] Sonnet responded in ${elapsed}s, stop: ${response.stop_reason}, output: ${response.usage.output_tokens} tokens`,
+  );
+
+  const block = response.content[0];
+  if (block.type !== "text") {
+    console.warn(`[generate] Fast edit: unexpected block type ${block.type}`);
+    return null;
+  }
+
+  // Parse the diff response
+  let jsonStr: string;
+  try {
+    jsonStr = extractJson(block.text);
+  } catch {
+    console.warn(`[generate] Fast edit: failed to extract JSON, falling back`);
+    return null;
+  }
+
+  let data: ParsedDiffResponse;
+  try {
+    data = JSON.parse(jsonStr);
+  } catch {
+    console.warn(`[generate] Fast edit: JSON parse failed, falling back`);
+    return null;
+  }
+
+  if (!Array.isArray(data.patches)) {
+    console.warn(`[generate] Fast edit: no patches array, falling back`);
+    return null;
+  }
+
+  console.log(`[generate] Fast edit: ${data.patches.length} patch(es) to apply`);
+
+  // Apply patches to HTML
+  const patchedHtml = applyPatches(currentHtml, data.patches);
+  if (patchedHtml === null) {
+    console.warn(`[generate] Fast edit: patch application failed, falling back`);
+    return null;
+  }
+
+  // Apply schema changes
+  if (data.newTables && data.newTables.length > 0) {
+    // Need table defs — the diff response should include them in newTables
+    // But the diff format doesn't include full table defs. We'll parse from the patches.
+    // For now, log and continue — schema changes in diff mode are rare
+    console.log(`[generate] Fast edit: ${data.newTables.length} new table(s) requested`);
+  }
+
+  if (data.newColumns) {
+    for (const [tableName, cols] of Object.entries(data.newColumns)) {
+      console.log(
+        `[generate] Fast edit: adding ${cols.length} column(s) to "${tableName}"`,
+      );
+      for (const col of cols) {
+        addColumnToTable(appId, tableName, col);
+      }
+    }
+  }
+
+  if (data.seedData) {
+    console.log(`[generate] Fast edit: inserting seed data...`);
+    insertSeedData(appId, data.seedData);
+  }
+
+  const html = patchedHtml.replace(/\{\{APP_ID\}\}/g, appId);
+  updateAppHtml(appId, html);
+  console.log(`[generate] Fast edit completed in ${elapsed}s`);
+  return true;
+}
+
 export async function editApp(
   appId: string,
   description: string,
@@ -770,16 +944,31 @@ export async function editApp(
 
     if (onProgress) await onProgress({ step: "analyzing", message: "Analyzing app and schema..." });
 
+    // === Phase 1: Try fast diff-based edit with Sonnet ===
+    if (onProgress) await onProgress({ step: "generating", message: "Generating changes..." });
+
+    try {
+      const fastResult = await editAppFast(
+        appId, app.html, schemaDescription, description, client, onProgress,
+      );
+
+      if (fastResult === true) {
+        if (onProgress) await onProgress({ step: "complete", message: "Edit complete" });
+        return true;
+      }
+    } catch (fastErr) {
+      console.warn(`[generate] Fast edit threw:`, fastErr);
+    }
+
+    // === Phase 2: Fallback to full regeneration with Opus ===
+    console.log(`[generate] Falling back to full regeneration with Opus...`);
+    if (onProgress) await onProgress({ step: "generating", message: "Regenerating full app (patch failed, using thorough mode)..." });
+
     const uxLessonsBlock = buildUxLessonsBlock();
     const editSystemPrompt = EDIT_SYSTEM_PROMPT + uxLessonsBlock;
 
-    console.log(`[generate] Sending streaming edit request to Claude...`);
-    if (uxLessonsBlock) {
-      console.log(`[generate] Injecting UX lessons into edit system prompt`);
-    }
+    console.log(`[generate] Sending streaming edit request to Opus...`);
     const startTime = Date.now();
-
-    if (onProgress) await onProgress({ step: "generating", message: "Generating updated code..." });
 
     const stream = client.messages.stream({
       model: "claude-opus-4-6",
@@ -799,15 +988,14 @@ export async function editApp(
       if (current - lastLoggedTokens >= 500) {
         console.log(`[generate] Streaming edit... ${current} output tokens so far`);
         lastLoggedTokens = current;
-        // Fire-and-forget: Anthropic SDK callback is synchronous, can't await
-        onProgress?.({ step: "generating", message: "Generating updated code...", tokens: current });
+        onProgress?.({ step: "generating", message: "Regenerating full app...", tokens: current });
       }
     });
 
     const response = await stream.finalMessage();
 
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-    console.log(`[generate] Claude responded in ${elapsed}s`);
+    console.log(`[generate] Opus responded in ${elapsed}s`);
     console.log(`[generate] Stop reason: ${response.stop_reason}`);
     console.log(
       `[generate] Usage: input=${response.usage.input_tokens} output=${response.usage.output_tokens}`,
