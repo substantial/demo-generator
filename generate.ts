@@ -14,6 +14,7 @@ import {
   listEditRequests,
   listConversations,
   getMessages,
+  logUsage,
   type TableDef,
   type ColumnDef,
 } from "./db.ts";
@@ -260,6 +261,7 @@ GUARDRAILS: Never build login/signup forms, no file uploads, WebSockets, email, 
 export async function extractUxLesson(
   editDescription: string,
   client: Anthropic,
+  appId?: string,
 ): Promise<string | null> {
   const response = await client.messages.create({
     model: "claude-sonnet-4-6",
@@ -271,6 +273,10 @@ export async function extractUxLesson(
       },
     ],
   });
+
+  if (appId) {
+    logUsage(appId, "ux-lesson", "claude-sonnet-4-6", response.usage.input_tokens, response.usage.output_tokens);
+  }
 
   const block = response.content[0];
   if (block.type !== "text") return null;
@@ -762,6 +768,7 @@ export async function generateApp(
 
   const html = parsed.html.replace(/\{\{APP_ID\}\}/g, appId);
   saveApp(appId, issueUrl, title, html, body, input.prd, input.erd);
+  logUsage(appId, "generate", "claude-opus-4-6", response.usage.input_tokens, response.usage.output_tokens);
   console.log(
     `[generate] App saved: "${title}" -> /apps/${appId}`,
   );
@@ -844,6 +851,7 @@ async function editAppFast(
   });
 
   const response = await stream.finalMessage();
+  logUsage(appId, "edit-fast", "claude-sonnet-4-6", response.usage.input_tokens, response.usage.output_tokens);
 
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
   console.log(
@@ -993,6 +1001,7 @@ export async function editApp(
     });
 
     const response = await stream.finalMessage();
+    logUsage(appId, "edit-full", "claude-opus-4-6", response.usage.input_tokens, response.usage.output_tokens);
 
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
     console.log(`[generate] Opus responded in ${elapsed}s`);
@@ -1082,6 +1091,7 @@ export async function generatePrd(
   description: string,
   title: string,
   client: Anthropic,
+  appId?: string,
 ): Promise<string> {
   console.log(`[generate] Generating PRD for "${title}"...`);
   const startTime = Date.now();
@@ -1114,6 +1124,10 @@ Be specific and actionable. Every feature must be implementable within the platf
     ],
   });
 
+  if (appId) {
+    logUsage(appId, "generate-prd", "claude-opus-4-6", response.usage.input_tokens, response.usage.output_tokens);
+  }
+
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
   console.log(`[generate] PRD generated in ${elapsed}s`);
 
@@ -1126,6 +1140,7 @@ export async function generateErd(
   prd: string,
   title: string,
   client: Anthropic,
+  appId?: string,
 ): Promise<string> {
   console.log(`[generate] Generating ERD for "${title}"...`);
   const startTime = Date.now();
@@ -1162,6 +1177,10 @@ Be extremely specific. A developer should be able to build the complete app from
       },
     ],
   });
+
+  if (appId) {
+    logUsage(appId, "generate-erd", "claude-opus-4-6", response.usage.input_tokens, response.usage.output_tokens);
+  }
 
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
   console.log(`[generate] ERD generated in ${elapsed}s`);
@@ -1206,6 +1225,7 @@ export async function regenerateApp(
   });
 
   const response = await stream.finalMessage();
+  logUsage(appId, "regenerate", "claude-opus-4-6", response.usage.input_tokens, response.usage.output_tokens);
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
   console.log(`[generate] Regeneration response in ${elapsed}s, stop: ${response.stop_reason}`);
 
@@ -1317,6 +1337,8 @@ Number tickets sequentially (TICKET-001, TICKET-002, etc.). Be specific and acti
       },
     ],
   });
+
+  logUsage(appId, "poc-plan", "claude-opus-4-6", response.usage.input_tokens, response.usage.output_tokens);
 
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
   console.log(`[generate] POC Build Plan generated in ${elapsed}s`);

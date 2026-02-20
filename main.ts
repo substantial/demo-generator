@@ -6,7 +6,7 @@ import { load } from "@std/dotenv";
 import { verify } from "@hono/hono/jwt";
 import { getCookie } from "@hono/hono/cookie";
 import { loginHandler, logoutHandler, authMiddleware, requireRoot, requireAppAccess, generateMagicLinkToken, magicLinkHandler } from "./auth.ts";
-import { listAppsWithCredentials, getApp, deleteApp, updateAppCredentials, deleteAppCredentials, getAppCredentials, updateAppTitle, updateAppPrd, updateAppErd, updateAppPocPlan, saveEditRequest, listEditRequests, listAllEditRequests, deleteEditRequest, saveUxLesson, listUxLessons, deleteUxLesson } from "./db.ts";
+import { listAppsWithCredentials, getApp, deleteApp, updateAppCredentials, deleteAppCredentials, getAppCredentials, updateAppTitle, updateAppPrd, updateAppErd, updateAppPocPlan, saveEditRequest, listEditRequests, listAllEditRequests, deleteEditRequest, saveUxLesson, listUxLessons, deleteUxLesson, logUsage, getAllAppSpends, disableApp, enableApp, isAppDisabled } from "./db.ts";
 import { generateApp, editApp, extractUxLesson, generatePrd, generateErd, regenerateApp, generatePocPlan, type EditProgressEvent } from "./generate.ts";
 import { crud } from "./crud.ts";
 import { createChatRoutes } from "./chat.ts";
@@ -118,7 +118,8 @@ app.get("/dashboard/apps/:appId/poc-plan", async (c) => {
 
 // --- API routes: root only ---
 app.get("/api/apps", authMiddleware, requireRoot, (c) => {
-  const apps = listAppsWithCredentials();
+  const spends = getAllAppSpends();
+  const apps = listAppsWithCredentials().map(a => ({ ...a, spend: spends[a.id] || 0 }));
   return c.json(apps);
 });
 
@@ -164,6 +165,11 @@ app.post("/api/apps", authMiddleware, requireRoot, async (c) => {
 
 app.post("/api/apps/:appId/edit", authMiddleware, requireAppAccess, async (c) => {
   const appId = c.req.param("appId");
+  const role = c.get("role");
+  if (role !== "root") {
+    const disabledStatus = isAppDisabled(appId);
+    if (disabledStatus.disabled) return c.json({ error: "App is disabled: " + disabledStatus.reason }, 403);
+  }
   let body: { description?: string };
   try {
     body = await c.req.json();
@@ -174,8 +180,6 @@ app.post("/api/apps/:appId/edit", authMiddleware, requireAppAccess, async (c) =>
   if (!body.description) {
     return c.json({ error: "description is required" }, 400);
   }
-
-  const role = c.get("role");
 
   // Non-root users: save the request for tracking, then execute the edit
   if (role !== "root") {
@@ -192,7 +196,7 @@ app.post("/api/apps/:appId/edit", authMiddleware, requireAppAccess, async (c) =>
       });
 
       // Fire-and-forget: extract UX lesson from this edit
-      extractUxLesson(description, client).then((lesson) => {
+      extractUxLesson(description, client, appId).then((lesson) => {
         if (lesson) {
           saveUxLesson(lesson, appId, description);
           console.log(`[ux-lessons] Learned: "${lesson}"`);
@@ -259,6 +263,7 @@ Be concise and actionable. Use bullet points and markdown formatting.`,
     }],
   });
 
+  logUsage(appId, "edit-summary", "claude-opus-4-6", message.usage.input_tokens, message.usage.output_tokens);
   const summary = message.content[0].type === "text" ? message.content[0].text : "Unable to generate summary.";
   return c.json({ summary });
 });
@@ -397,7 +402,7 @@ app.post("/api/apps/:appId/generate-prd", authMiddleware, requireRoot, async (c)
   const record = getApp(appId);
   if (!record) return c.json({ error: "App not found" }, 404);
   try {
-    const prd = await generatePrd(record.description, record.title, client);
+    const prd = await generatePrd(record.description, record.title, client, appId);
     updateAppPrd(appId, prd);
     return c.json({ ok: true, prd });
   } catch (e: unknown) {
@@ -415,11 +420,11 @@ app.post("/api/apps/:appId/generate-erd", authMiddleware, requireRoot, async (c)
     let prd = record.prd;
     let prdGenerated = false;
     if (!prd) {
-      prd = await generatePrd(record.description, record.title, client);
+      prd = await generatePrd(record.description, record.title, client, appId);
       updateAppPrd(appId, prd);
       prdGenerated = true;
     }
-    const erd = await generateErd(prd, record.title, client);
+    const erd = await generateErd(prd, record.title, client, appId);
     updateAppErd(appId, erd);
     return c.json({ ok: true, erd, ...(prdGenerated ? { prd } : {}) });
   } catch (e: unknown) {
@@ -487,14 +492,49 @@ app.put("/api/apps/:appId/poc-plan", authMiddleware, requireRoot, async (c) => {
   return c.json({ ok: true });
 });
 
+// --- Root-only: enable/disable apps ---
+app.post("/api/apps/:appId/disable", authMiddleware, requireRoot, async (c) => {
+  const appId = c.req.param("appId");
+  const record = getApp(appId);
+  if (!record) return c.json({ error: "App not found" }, 404);
+  let body: { reason?: string } = {};
+  try { body = await c.req.json(); } catch { /* empty body is fine */ }
+  disableApp(appId, body.reason || "manual");
+  return c.json({ ok: true });
+});
+
+app.post("/api/apps/:appId/enable", authMiddleware, requireRoot, (c) => {
+  const appId = c.req.param("appId");
+  const record = getApp(appId);
+  if (!record) return c.json({ error: "App not found" }, 404);
+  enableApp(appId);
+  return c.json({ ok: true });
+});
+
+// --- Disabled app page (public, no auth) ---
+app.get("/apps/:appId/disabled", async (c) => {
+  const html = await Deno.readTextFile("static/app-disabled.html");
+  return c.html(html);
+});
+
 // --- Per-app routes: open if no credentials, otherwise require auth ---
 import type { Context, Next } from "@hono/hono";
 
 const openOrAuth = async (c: Context, next: Next) => {
   const appId = c.req.param("appId");
   if (!appId) { await next(); return; }
+
+  // Check if app is disabled (root users bypass this check)
+  const disabledStatus = isAppDisabled(appId);
+
   const creds = getAppCredentials(appId);
-  if (!creds) { await next(); return; }
+  if (!creds) {
+    // Open app — still check disabled
+    if (disabledStatus.disabled) {
+      return c.json({ error: "App is disabled: " + disabledStatus.reason }, 403);
+    }
+    await next(); return;
+  }
 
   const token = getCookie(c, "auth_token");
   if (!token) return c.json({ error: "Unauthorized" }, 401);
@@ -505,6 +545,10 @@ const openOrAuth = async (c: Context, next: Next) => {
     c.set("role", payload.role as string);
     if (payload.appId) c.set("appId", payload.appId as string);
     if (payload.role === "root") { await next(); return; }
+    // Non-root: check disabled
+    if (disabledStatus.disabled) {
+      return c.json({ error: "App is disabled: " + disabledStatus.reason }, 403);
+    }
     if (payload.role === "app" && payload.appId === appId) { await next(); return; }
     return c.json({ error: "Forbidden" }, 403);
   } catch {
@@ -546,6 +590,9 @@ app.get("/apps/:appId", async (c) => {
 
   // No credentials → serve directly to anyone (open access, no widget)
   if (!creds) {
+    // Check disabled for open apps (no auth to check role)
+    const disabledStatus = isAppDisabled(appId);
+    if (disabledStatus.disabled) return c.redirect(`/apps/${appId}/disabled`);
     return c.html(record.html);
   }
 
@@ -569,6 +616,12 @@ app.get("/apps/:appId", async (c) => {
 
   if (!hasAccess) {
     return c.redirect(`/apps/${appId}/login`);
+  }
+
+  // Check disabled — root users bypass
+  if (role !== "root") {
+    const disabledStatus = isAppDisabled(appId);
+    if (disabledStatus.disabled) return c.redirect(`/apps/${appId}/disabled`);
   }
 
   const isRoot = role === "root";

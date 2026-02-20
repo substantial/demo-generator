@@ -18,6 +18,10 @@ try { db.exec(`ALTER TABLE apps ADD COLUMN prd TEXT DEFAULT ''`); } catch {}
 try { db.exec(`ALTER TABLE apps ADD COLUMN erd TEXT DEFAULT ''`); } catch {}
 try { db.exec(`ALTER TABLE apps ADD COLUMN poc_plan TEXT DEFAULT ''`); } catch {}
 
+// Migration: add disabled/disabled_reason columns
+try { db.exec(`ALTER TABLE apps ADD COLUMN disabled INTEGER DEFAULT 0`); } catch {}
+try { db.exec(`ALTER TABLE apps ADD COLUMN disabled_reason TEXT DEFAULT ''`); } catch {}
+
 // Create meta tables
 db.exec(`
   CREATE TABLE IF NOT EXISTS apps (
@@ -157,6 +161,91 @@ db.exec(`
   )
 `);
 
+// Usage tracking for API spend
+db.exec(`
+  CREATE TABLE IF NOT EXISTS usage_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    app_id TEXT NOT NULL,
+    endpoint TEXT NOT NULL,
+    model TEXT NOT NULL,
+    input_tokens INTEGER NOT NULL,
+    output_tokens INTEGER NOT NULL,
+    cost_dollars REAL NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )
+`);
+
+// === Spend Tracking ===
+
+const MODEL_PRICING: Record<string, { input: number; output: number }> = {
+  "claude-opus-4-6": { input: 15, output: 75 },
+  "claude-sonnet-4-6": { input: 3, output: 15 },
+  "claude-sonnet-4-5-20250929": { input: 3, output: 15 },
+  "claude-haiku-4-5-20251001": { input: 0.80, output: 4 },
+  "gpt-4o": { input: 2.50, output: 10 },
+};
+
+const SPEND_LIMIT = 50; // dollars
+
+export function logUsage(
+  appId: string,
+  endpoint: string,
+  model: string,
+  inputTokens: number,
+  outputTokens: number,
+): void {
+  const pricing = MODEL_PRICING[model] ?? { input: 3, output: 15 }; // default to sonnet pricing
+  const cost = (inputTokens / 1_000_000) * pricing.input + (outputTokens / 1_000_000) * pricing.output;
+  db.exec(
+    `INSERT INTO usage_log (app_id, endpoint, model, input_tokens, output_tokens, cost_dollars) VALUES (?, ?, ?, ?, ?, ?)`,
+    [appId, endpoint, model, inputTokens, outputTokens, cost],
+  );
+
+  // Auto-disable if spend exceeds limit
+  const totalSpend = getAppSpend(appId);
+  if (totalSpend > SPEND_LIMIT) {
+    const status = isAppDisabled(appId);
+    if (!status.disabled) {
+      disableApp(appId, `Auto-disabled: spend exceeded $${SPEND_LIMIT}`);
+      console.log(`[spend] App ${appId} auto-disabled at $${totalSpend.toFixed(2)}`);
+    }
+  }
+}
+
+export function getAppSpend(appId: string): number {
+  const row = db
+    .prepare("SELECT SUM(cost_dollars) as total FROM usage_log WHERE app_id = ?")
+    .get(appId) as { total: number | null } | undefined;
+  return row?.total ?? 0;
+}
+
+export function getAllAppSpends(): Record<string, number> {
+  const rows = db
+    .prepare("SELECT app_id, SUM(cost_dollars) as total FROM usage_log GROUP BY app_id")
+    .all() as { app_id: string; total: number }[];
+  const result: Record<string, number> = {};
+  for (const row of rows) {
+    result[row.app_id] = row.total;
+  }
+  return result;
+}
+
+export function disableApp(appId: string, reason: string): void {
+  db.exec(`UPDATE apps SET disabled = 1, disabled_reason = ? WHERE id = ?`, [reason, appId]);
+}
+
+export function enableApp(appId: string): void {
+  db.exec(`UPDATE apps SET disabled = 0, disabled_reason = '' WHERE id = ?`, [appId]);
+}
+
+export function isAppDisabled(appId: string): { disabled: boolean; reason: string } {
+  const row = db
+    .prepare("SELECT disabled, disabled_reason FROM apps WHERE id = ?")
+    .get(appId) as { disabled: number; disabled_reason: string } | undefined;
+  if (!row) return { disabled: false, reason: "" };
+  return { disabled: row.disabled === 1, reason: row.disabled_reason || "" };
+}
+
 export function saveAppCredentials(
   appId: string,
   username: string,
@@ -256,6 +345,7 @@ export function deleteApp(appId: string): void {
   }
   db.exec(`DELETE FROM mcp_servers WHERE app_id = ?`, [appId]);
 
+  db.exec(`DELETE FROM usage_log WHERE app_id = ?`, [appId]);
   db.exec(`DELETE FROM apps WHERE id = ?`, [appId]);
 }
 
@@ -270,10 +360,13 @@ export function listAppsWithCredentials(): {
   created_at: string;
   cred_username: string | null;
   cred_password: string | null;
+  disabled: number;
+  disabled_reason: string;
 }[] {
   return db
     .prepare(
       `SELECT a.id, a.title, a.description, a.prd, a.erd, a.poc_plan, a.github_issue_url, a.created_at,
+              a.disabled, a.disabled_reason,
               ac.username AS cred_username, ac.password AS cred_password
        FROM apps a
        LEFT JOIN app_credentials ac ON a.id = ac.app_id
@@ -290,6 +383,8 @@ export function listAppsWithCredentials(): {
     created_at: string;
     cred_username: string | null;
     cred_password: string | null;
+    disabled: number;
+    disabled_reason: string;
   }[];
 }
 

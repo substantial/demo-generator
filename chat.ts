@@ -14,6 +14,7 @@ import {
   getMessages,
   updateConversationTitle,
   deleteConversation,
+  logUsage,
 } from "./db.ts";
 
 // Map short names to actual model IDs
@@ -104,6 +105,12 @@ Rules:
   return context;
 }
 
+export interface LLMResult {
+  text: string;
+  inputTokens: number;
+  outputTokens: number;
+}
+
 export function createChatRoutes(anthropicClient: Anthropic, openaiClient: OpenAI): Hono {
   const chat = new Hono();
 
@@ -112,7 +119,7 @@ export function createChatRoutes(anthropicClient: Anthropic, openaiClient: OpenA
     messages: { role: "user" | "assistant"; content: string }[],
     model: string,
     temperature?: number,
-  ): Promise<string> {
+  ): Promise<LLMResult> {
     if (getModelProvider(model) === "openai") {
       const openaiMessages: OpenAI.ChatCompletionMessageParam[] = [
         { role: "system", content: system },
@@ -124,7 +131,11 @@ export function createChatRoutes(anthropicClient: Anthropic, openaiClient: OpenA
         max_tokens: 4096,
         ...(temperature !== undefined ? { temperature } : {}),
       });
-      return response.choices[0]?.message?.content ?? "";
+      return {
+        text: response.choices[0]?.message?.content ?? "",
+        inputTokens: response.usage?.prompt_tokens ?? 0,
+        outputTokens: response.usage?.completion_tokens ?? 0,
+      };
     } else {
       const response = await anthropicClient.messages.create({
         model,
@@ -133,10 +144,14 @@ export function createChatRoutes(anthropicClient: Anthropic, openaiClient: OpenA
         messages,
         ...(temperature !== undefined ? { temperature } : {}),
       });
-      return response.content
-        .filter((b) => b.type === "text")
-        .map((b) => b.text)
-        .join("");
+      return {
+        text: response.content
+          .filter((b) => b.type === "text")
+          .map((b) => b.text)
+          .join(""),
+        inputTokens: response.usage.input_tokens,
+        outputTokens: response.usage.output_tokens,
+      };
     }
   }
 
@@ -218,16 +233,17 @@ export function createChatRoutes(anthropicClient: Anthropic, openaiClient: OpenA
     const temperature = body.temperature ?? convo.temperature ?? undefined;
 
     try {
-      const text = await callLLM(system, messages, model, temperature);
+      const result = await callLLM(system, messages, model, temperature);
+      logUsage(appId, "chat", model, result.inputTokens, result.outputTokens);
 
-      addMessage(convId, "assistant", text);
+      addMessage(convId, "assistant", result.text);
 
       if (allMsgs.length <= 1) {
         const shortTitle = userContent.length > 60 ? userContent.slice(0, 57) + "..." : userContent;
         updateConversationTitle(convId, shortTitle);
       }
 
-      return c.json({ role: "assistant", content: text, model });
+      return c.json({ role: "assistant", content: result.text, model });
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "Chat failed";
       return c.json({ error: msg }, 500);
@@ -236,6 +252,7 @@ export function createChatRoutes(anthropicClient: Anthropic, openaiClient: OpenA
 
   async function handleStatelessChat(c: Context) {
     const appId = c.req.param("appId");
+
     const app = getApp(appId);
     if (!app) return c.json({ error: "App not found" }, 404);
 
@@ -268,9 +285,10 @@ export function createChatRoutes(anthropicClient: Anthropic, openaiClient: OpenA
     const temperature = body.temperature;
 
     try {
-      const text = await callLLM(system, messages, model, temperature);
+      const result = await callLLM(system, messages, model, temperature);
+      logUsage(appId, "chat", model, result.inputTokens, result.outputTokens);
 
-      return c.json({ role: "assistant", content: text, response: text, model });
+      return c.json({ role: "assistant", content: result.text, response: result.text, model });
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "Chat failed";
       return c.json({ error: msg }, 500);

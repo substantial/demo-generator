@@ -181,6 +181,40 @@
     .card-actions button:hover { background: var(--surface-alt); }
     .card-actions .btn-primary { color: var(--accent); border-color: var(--accent); }
     .card-actions .btn-primary:hover { background: color-mix(in srgb, var(--accent) 10%, var(--surface)); }
+    .card-actions .btn-danger { color: var(--danger); border-color: var(--danger); }
+    .card-actions .btn-danger:hover { background: color-mix(in srgb, var(--danger) 10%, var(--surface)); }
+    .card-actions .btn-success { color: var(--success-text); border-color: var(--success-border); }
+    .card-actions .btn-success:hover { background: var(--success-bg); }
+    .badge-row { display: flex; gap: 0.4rem; margin-top: 0.4rem; flex-wrap: wrap; }
+    .spend-badge {
+      display: inline-block;
+      font-size: 0.75rem;
+      font-weight: 600;
+      padding: 0.15rem 0.5rem;
+      border-radius: 10px;
+      background: var(--surface-alt);
+      border: 1px solid var(--border);
+      color: var(--text-secondary);
+    }
+    .spend-badge.warn { background: #fff3cd; border-color: #ffc107; color: #856404; }
+    .spend-badge.over { background: #f8d7da; border-color: #f5c6cb; color: #721c24; }
+    @media (prefers-color-scheme: dark) {
+      .spend-badge.warn { background: #3d3200; border-color: #665200; color: #ffc107; }
+      .spend-badge.over { background: #3d0a0a; border-color: #661515; color: #ef5350; }
+    }
+    .disabled-badge {
+      display: inline-block;
+      font-size: 0.75rem;
+      font-weight: 600;
+      padding: 0.15rem 0.5rem;
+      border-radius: 10px;
+      background: #f8d7da;
+      border: 1px solid #f5c6cb;
+      color: #721c24;
+    }
+    @media (prefers-color-scheme: dark) {
+      .disabled-badge { background: #3d0a0a; border-color: #661515; color: #ef5350; }
+    }
     .toast {
       position: fixed;
       bottom: 20px;
@@ -304,16 +338,24 @@
 
       container.innerHTML = '<div class="grid">' + cachedApps.map(a => {
         const desc = a.description ? `<div class="description">${escapeHtml(a.description)}</div>` : '';
+        const spend = a.spend || 0;
+        const spendClass = spend > 50 ? 'over' : spend > 40 ? 'warn' : '';
+        const spendBadge = `<span class="spend-badge ${spendClass}">$${spend.toFixed(2)}</span>`;
+        const disabledBadge = a.disabled ? '<span class="disabled-badge">Disabled</span>' : '';
         const magicBtn = a.cred_username
           ? `<button class="btn-primary" data-action="magic" data-id="${a.id}">Copy Magic Link</button>`
           : '';
+        const toggleBtn = a.disabled
+          ? `<button class="btn-success" data-action="enable" data-id="${a.id}">Enable</button>`
+          : `<button class="btn-danger" data-action="disable" data-id="${a.id}">Disable</button>`;
         return `<div class="card">
           <a class="card-link" href="/dashboard/apps/${a.id}">
             <h3>${escapeHtml(a.title)}</h3>
             <div class="meta">${escapeHtml(a.created_at)}</div>
+            <div class="badge-row">${spendBadge}${disabledBadge}</div>
             ${desc}
           </a>
-          ${magicBtn ? `<div class="card-actions">${magicBtn}</div>` : ''}
+          <div class="card-actions">${magicBtn}${toggleBtn}</div>
         </div>`;
       }).join("") + '</div>';
     }
@@ -443,6 +485,24 @@
       }
     });
 
+    async function toggleApp(appId, action) {
+      try {
+        const res = await authFetch(`/api/apps/${appId}/${action}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        });
+        if (!res.ok) { const d = await safeJson(res); throw new Error(d.error); }
+        const app = cachedApps.find(a => a.id === appId);
+        if (app) {
+          app.disabled = action === "disable" ? 1 : 0;
+          app.disabled_reason = action === "disable" ? "manual" : "";
+        }
+        renderApps();
+        showToast(action === "disable" ? "App disabled" : "App enabled");
+      } catch (e) { showToast("Error: " + e.message); }
+    }
+
     // Event delegation for card action buttons
     document.getElementById("content").addEventListener("click", (e) => {
       const btn = e.target.closest("[data-action]");
@@ -451,6 +511,8 @@
       e.stopPropagation();
       const id = btn.dataset.id;
       if (btn.dataset.action === "magic") copyMagicLink(id);
+      if (btn.dataset.action === "enable") toggleApp(id, "enable");
+      if (btn.dataset.action === "disable") toggleApp(id, "disable");
     });
 
     loadApps();

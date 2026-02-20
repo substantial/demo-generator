@@ -100,13 +100,21 @@ html,body{height:100%;overflow:hidden}
     if (panel.classList.contains('open')) input.focus();
   });
 
-  function addMsg(text, cls) {
+  function addMsg(text, cls, html) {
     var d = document.createElement('div');
     d.className = '__chat_msg ' + cls;
-    d.textContent = text;
+    if (html) d.innerHTML = text; else d.textContent = text;
     messages.appendChild(d);
     messages.scrollTop = messages.scrollHeight;
     return d;
+  }
+
+  function disableChat() {
+    input.disabled = true;
+    input.placeholder = 'This demo has been paused';
+    sendBtn.disabled = true;
+    sendBtn.style.opacity = '0.4';
+    sendBtn.style.cursor = 'default';
   }
 
   function updateBadge() {
@@ -193,6 +201,16 @@ html,body{height:100%;overflow:hidden}
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ description: description })
     }).then(function(res) {
+      if (res.status === 403) {
+        hideTyping();
+        queue.splice(0, queue.length);
+        addMsg('This demo has been paused. To keep going, <a href="https://substantial.com/get-started" target="_blank" style="color:inherit;text-decoration:underline;font-weight:600">get in touch with us</a>.', 'error', true);
+        disableChat();
+        processing = false;
+        updateBadge();
+        setStatus('');
+        return;
+      }
       if (!res.ok) {
         return res.text().then(function(errText) {
           var errMsg = 'Edit failed';

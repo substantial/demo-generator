@@ -204,6 +204,33 @@
     .doc-link .doc-title { font-weight: 600; font-size: 0.9rem; margin-bottom: 0.2rem; }
     .doc-link .doc-status { font-size: 0.75rem; color: var(--text-muted); }
     .doc-link .doc-status.has-content { color: var(--success-text); }
+    .spend-display {
+      font-size: 0.9rem;
+      font-weight: 600;
+      padding: 0.3rem 0.7rem;
+      border-radius: 6px;
+      background: var(--surface-alt);
+      border: 1px solid var(--border);
+      color: var(--text-secondary);
+    }
+    .spend-display.warn { background: #fff3cd; border-color: #ffc107; color: #856404; }
+    .spend-display.over { background: #f8d7da; border-color: #f5c6cb; color: #721c24; }
+    @media (prefers-color-scheme: dark) {
+      .spend-display.warn { background: #3d3200; border-color: #665200; color: #ffc107; }
+      .spend-display.over { background: #3d0a0a; border-color: #661515; color: #ef5350; }
+    }
+    .disabled-banner {
+      background: #f8d7da;
+      border: 1px solid #f5c6cb;
+      color: #721c24;
+      border-radius: 6px;
+      padding: 0.6rem 1rem;
+      margin-bottom: 1rem;
+      font-size: 0.9rem;
+    }
+    @media (prefers-color-scheme: dark) {
+      .disabled-banner { background: #3d0a0a; border-color: #661515; color: #ef5350; }
+    }
   </style>
 </head>
 <body>
@@ -211,11 +238,14 @@
 
   <div id="page-loading" class="loading-page">Loading...</div>
   <div id="page-content" style="display:none">
+    <div id="disabled-banner" class="disabled-banner" style="display:none"></div>
     <div class="header">
       <input type="text" id="app-title" placeholder="App title">
       <div class="header-actions">
+        <span class="spend-display" id="spend-display">$0.00</span>
         <button class="btn btn-primary" id="save-title-btn">Save Title</button>
         <a id="open-app-link" class="btn" target="_blank">Open App &rarr;</a>
+        <button class="btn" id="toggle-disable-btn">Disable</button>
         <button class="btn btn-danger" id="delete-btn">Delete</button>
       </div>
     </div>
@@ -359,6 +389,7 @@
         document.title = appData.title + " — Detail";
         document.getElementById("app-title").value = appData.title;
         document.getElementById("open-app-link").href = "/apps/" + appId;
+        renderSpendAndDisabled();
         renderCredentials();
         loadDocLinks();
 
@@ -622,6 +653,49 @@
         statusEl.style.color = "var(--danger)";
         btn.disabled = false;
       }
+    });
+
+    function renderSpendAndDisabled() {
+      if (!appData) return;
+      const spend = appData.spend || 0;
+      const spendEl = document.getElementById("spend-display");
+      spendEl.textContent = "$" + spend.toFixed(2);
+      spendEl.className = "spend-display" + (spend > 50 ? " over" : spend > 40 ? " warn" : "");
+
+      const banner = document.getElementById("disabled-banner");
+      const toggleBtn = document.getElementById("toggle-disable-btn");
+      if (appData.disabled) {
+        banner.style.display = "";
+        banner.textContent = "This app is disabled" + (appData.disabled_reason ? ": " + appData.disabled_reason : "");
+        toggleBtn.textContent = "Enable";
+        toggleBtn.className = "btn";
+        toggleBtn.style.color = "var(--success-text)";
+        toggleBtn.style.borderColor = "var(--success-border)";
+      } else {
+        banner.style.display = "none";
+        toggleBtn.textContent = "Disable";
+        toggleBtn.className = "btn btn-danger";
+        toggleBtn.style.color = "";
+        toggleBtn.style.borderColor = "";
+      }
+    }
+
+    document.getElementById("toggle-disable-btn").addEventListener("click", async () => {
+      if (!appData) return;
+      const action = appData.disabled ? "enable" : "disable";
+      if (action === "disable" && !confirm("Disable this app? Users will see a paused page.")) return;
+      try {
+        const res = await authFetch(`/api/apps/${appId}/${action}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        });
+        if (!res.ok) { const d = await safeJson(res); throw new Error(d.error); }
+        appData.disabled = action === "disable" ? 1 : 0;
+        appData.disabled_reason = action === "disable" ? "manual" : "";
+        renderSpendAndDisabled();
+        showToast(action === "disable" ? "App disabled" : "App enabled");
+      } catch (e) { showToast("Error: " + e.message); }
     });
 
     loadApp();
