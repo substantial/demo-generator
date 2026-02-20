@@ -264,7 +264,7 @@
 
     <div class="section">
       <h2>UX Lessons Learned</h2>
-      <p style="font-size:0.8rem;color:var(--text-muted);margin-bottom:0.75rem">Rules extracted from edit requests — applied to all future app generation.</p>
+      <p style="font-size:0.8rem;color:var(--text-muted);margin-bottom:0.75rem">UX rules extracted from edits to this app — applied to all future generation.</p>
       <div id="ux-lessons-content"></div>
     </div>
 
@@ -527,7 +527,7 @@
     function renderUxLessons() {
       const el = document.getElementById("ux-lessons-content");
       if (uxLessons.length === 0) {
-        el.innerHTML = '<div class="empty">No lessons learned yet. Lessons are extracted automatically when edits are made.</div>';
+        el.innerHTML = '<div class="empty">No lessons from this app yet. Lessons are extracted automatically when edits are made.</div>';
         return;
       }
       el.innerHTML = `<table>
@@ -542,7 +542,7 @@
 
     async function loadUxLessons() {
       try {
-        const res = await authFetch("/api/ux-lessons");
+        const res = await authFetch(`/api/apps/${appId}/ux-lessons`);
         if (res.ok) {
           uxLessons = await safeJson(res);
           renderUxLessons();

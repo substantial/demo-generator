@@ -6,7 +6,7 @@ import { load } from "@std/dotenv";
 import { verify } from "@hono/hono/jwt";
 import { getCookie } from "@hono/hono/cookie";
 import { loginHandler, logoutHandler, authMiddleware, requireRoot, requireAppAccess, generateMagicLinkToken, magicLinkHandler } from "./auth.ts";
-import { listAppsWithCredentials, getApp, deleteApp, updateAppCredentials, deleteAppCredentials, getAppCredentials, updateAppTitle, updateAppPrd, updateAppErd, updateAppPocPlan, saveEditRequest, listEditRequests, listAllEditRequests, deleteEditRequest, saveUxLesson, listUxLessons, deleteUxLesson, logUsage, getAllAppSpends, disableApp, enableApp, isAppDisabled } from "./db.ts";
+import { listAppsWithCredentials, getApp, deleteApp, updateAppCredentials, deleteAppCredentials, getAppCredentials, updateAppTitle, updateAppPrd, updateAppErd, updateAppPocPlan, saveEditRequest, listEditRequests, listAllEditRequests, deleteEditRequest, saveUxLesson, listUxLessons, listUxLessonsForApp, deleteUxLesson, logUsage, getAllAppSpends, disableApp, enableApp, isAppDisabled } from "./db.ts";
 import { generateApp, editApp, extractUxLesson, generatePrd, generateErd, regenerateApp, generatePocPlan, type EditProgressEvent } from "./generate.ts";
 import { crud } from "./crud.ts";
 import { createChatRoutes } from "./chat.ts";
@@ -271,6 +271,11 @@ Be concise and actionable. Use bullet points and markdown formatting.`,
 // --- Root-only: UX lessons management ---
 app.get("/api/ux-lessons", authMiddleware, requireRoot, (c) => {
   return c.json(listUxLessons());
+});
+
+app.get("/api/apps/:appId/ux-lessons", authMiddleware, requireRoot, (c) => {
+  const appId = c.req.param("appId");
+  return c.json(listUxLessonsForApp(appId));
 });
 
 app.post("/api/ux-lessons/:id/delete", authMiddleware, requireRoot, (c) => {

@@ -868,6 +868,24 @@ export function listUxLessons(): {
   }[];
 }
 
+export function listUxLessonsForApp(appId: string): {
+  id: number;
+  lesson: string;
+  source_app_id: string | null;
+  source_edit_description: string | null;
+  created_at: string;
+}[] {
+  return db
+    .prepare("SELECT * FROM ux_lessons WHERE source_app_id = ? ORDER BY created_at ASC")
+    .all(appId) as {
+    id: number;
+    lesson: string;
+    source_app_id: string | null;
+    source_edit_description: string | null;
+    created_at: string;
+  }[];
+}
+
 export function deleteUxLesson(id: number): void {
   db.exec(`DELETE FROM ux_lessons WHERE id = ?`, [id]);
 }
