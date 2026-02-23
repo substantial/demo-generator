@@ -728,13 +728,13 @@ export function createAppPlaceholder(
 ): void {
   db.exec(
     `INSERT INTO apps (id, github_issue_url, title, html, description, build_status) VALUES (?, ?, ?, ?, ?, ?)`,
-    [id, "manual-input", title, "", description, "building"],
+    [id, "manual-input", title, "", description, "building_prd"],
   );
 }
 
 export function updateAppBuildStatus(
   appId: string,
-  status: "building" | "ready" | "failed",
+  status: "building_prd" | "building_erd" | "building_app" | "ready" | "failed",
   failureReason?: string,
 ): void {
   db.exec(
@@ -748,11 +748,21 @@ export function getAppBuildStatus(appId: string): {
   title: string;
   build_status: string;
   failure_reason: string;
+  has_prd: boolean;
+  has_erd: boolean;
 } | null {
   const row = db
-    .prepare("SELECT id, title, build_status, failure_reason FROM apps WHERE id = ?")
-    .get(appId) as { id: string; title: string; build_status: string; failure_reason: string } | undefined;
-  return row ?? null;
+    .prepare("SELECT id, title, build_status, failure_reason, prd, erd FROM apps WHERE id = ?")
+    .get(appId) as { id: string; title: string; build_status: string; failure_reason: string; prd: string; erd: string } | undefined;
+  if (!row) return null;
+  return {
+    id: row.id,
+    title: row.title,
+    build_status: row.build_status,
+    failure_reason: row.failure_reason,
+    has_prd: Boolean(row.prd),
+    has_erd: Boolean(row.erd),
+  };
 }
 
 export function getApp(id: string): {

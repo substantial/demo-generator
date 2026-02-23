@@ -6,8 +6,8 @@ import { load } from "@std/dotenv";
 import { verify } from "@hono/hono/jwt";
 import { getCookie } from "@hono/hono/cookie";
 import { loginHandler, logoutHandler, authMiddleware, requireRoot, requireAppAccess, generateMagicLinkToken, magicLinkHandler } from "./auth.ts";
-import { listAppsWithCredentials, getApp, deleteApp, updateAppCredentials, deleteAppCredentials, getAppCredentials, updateAppTitle, updateAppPrd, updateAppErd, updateAppPocPlan, saveEditRequest, listEditRequests, listAllEditRequests, deleteEditRequest, saveUxLesson, listUxLessons, listUxLessonsForApp, deleteUxLesson, logUsage, getAllAppSpends, disableApp, enableApp, isAppDisabled } from "./db.ts";
-import { generateApp, editApp, extractUxLesson, generatePrd, generateErd, regenerateApp, generatePocPlan, type EditProgressEvent } from "./generate.ts";
+import { listAppsWithCredentials, getApp, deleteApp, updateAppCredentials, deleteAppCredentials, getAppCredentials, updateAppTitle, updateAppPrd, updateAppErd, updateAppPocPlan, saveEditRequest, listEditRequests, listAllEditRequests, deleteEditRequest, saveUxLesson, listUxLessons, listUxLessonsForApp, deleteUxLesson, logUsage, getAllAppSpends, disableApp, enableApp, isAppDisabled, createAppPlaceholder, getAppBuildStatus, updateAppBuildStatus } from "./db.ts";
+import { generateApp, editApp, extractUxLesson, generatePrd, generateErd, regenerateApp, generatePocPlan, backgroundGenerate, type EditProgressEvent } from "./generate.ts";
 import { crud } from "./crud.ts";
 import { createChatRoutes } from "./chat.ts";
 import { createAgentRoutes } from "./agents.ts";
@@ -142,29 +142,36 @@ app.post("/api/apps", authMiddleware, requireRoot, async (c) => {
   const description = body.body;
   const context = body.context;
 
-  return streamSSE(c, async (stream) => {
-    try {
-      // Stage 1: Generate PRD
-      await stream.writeSSE({ event: "prd", data: JSON.stringify({ step: "prd", message: "Generating Product Requirements..." }) });
-      const prd = await generatePrd(description, title, client, undefined, context);
-      await stream.writeSSE({ event: "prd_complete", data: JSON.stringify({ step: "prd_complete", message: "PRD complete" }) });
+  const appId = crypto.randomUUID();
+  createAppPlaceholder(appId, title, description);
+  backgroundGenerate(appId, title, description, client, context);
 
-      // Stage 2: Generate ERD
-      await stream.writeSSE({ event: "erd", data: JSON.stringify({ step: "erd", message: "Generating Engineering Requirements..." }) });
-      const erd = await generateErd(prd, title, client, undefined, context);
-      await stream.writeSSE({ event: "erd_complete", data: JSON.stringify({ step: "erd_complete", message: "ERD complete" }) });
+  return c.json({ appId });
+});
 
-      // Stage 3: Generate App
-      await stream.writeSSE({ event: "generating", data: JSON.stringify({ step: "generating", message: "Building app from requirements..." }) });
-      const result = await generateApp({ title, body: description, prd, erd, context }, client);
-
-      // Stage 4: Complete
-      await stream.writeSSE({ event: "complete", data: JSON.stringify({ step: "complete", appId: result.appId, credentials: result.credentials }) });
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : "App generation failed";
-      await stream.writeSSE({ event: "error", data: JSON.stringify({ step: "error", message: msg }) });
-    }
+// Build status polling endpoint
+app.get("/api/apps/:appId/build-status", authMiddleware, requireRoot, (c) => {
+  const appId = c.req.param("appId");
+  const status = getAppBuildStatus(appId);
+  if (!status) return c.json({ error: "App not found" }, 404);
+  return c.json({
+    build_status: status.build_status || "ready",
+    failure_reason: status.failure_reason || "",
+    has_prd: status.has_prd,
+    has_erd: status.has_erd,
   });
+});
+
+// Retry build endpoint
+app.post("/api/apps/:appId/retry", authMiddleware, requireRoot, async (c) => {
+  const appId = c.req.param("appId");
+  const app_record = getApp(appId);
+  if (!app_record) return c.json({ error: "App not found" }, 404);
+
+  updateAppBuildStatus(appId, "building_prd");
+  backgroundGenerate(appId, app_record.title, app_record.description, client);
+
+  return c.json({ ok: true });
 });
 
 app.post("/api/apps/:appId/edit", authMiddleware, requireAppAccess, async (c) => {

@@ -231,6 +231,72 @@
     @media (prefers-color-scheme: dark) {
       .disabled-banner { background: #3d0a0a; border-color: #661515; color: #ef5350; }
     }
+    .build-progress {
+      background: var(--surface);
+      border-radius: 8px;
+      box-shadow: 0 2px 8px var(--shadow);
+      padding: 1.25rem;
+      margin-bottom: 1.5rem;
+    }
+    .build-progress h2 { font-size: 1.05rem; margin-bottom: 0.75rem; }
+    .build-steps { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 0.75rem; }
+    .build-step {
+      padding: 0.4rem 0.85rem;
+      border-radius: 20px;
+      font-size: 0.8rem;
+      font-weight: 500;
+      background: var(--surface-alt);
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      transition: all 0.3s;
+    }
+    .build-step.active {
+      background: color-mix(in srgb, var(--accent) 15%, var(--surface));
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+    .build-step.active::after {
+      content: "";
+      display: inline-block;
+      width: 12px;
+      height: 12px;
+      border: 2px solid var(--accent);
+      border-top-color: transparent;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      vertical-align: middle;
+      margin-left: 0.4rem;
+    }
+    .build-step.done {
+      background: var(--success-bg);
+      border-color: var(--success-border);
+      color: var(--success-text);
+    }
+    .build-step.failed {
+      background: #f8d7da;
+      border-color: #dc3545;
+      color: #721c24;
+    }
+    @media (prefers-color-scheme: dark) {
+      .build-step.failed { background: #3d0a0a; border-color: #661515; color: #ef5350; }
+    }
+    .build-error {
+      background: #f8d7da;
+      border: 1px solid #f5c6cb;
+      border-radius: 6px;
+      padding: 0.75rem 1rem;
+      margin-top: 0.5rem;
+      font-size: 0.875rem;
+      color: #721c24;
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+    }
+    .build-error .error-msg { flex: 1; min-width: 200px; }
+    @media (prefers-color-scheme: dark) {
+      .build-error { background: #3d0a0a; border-color: #661515; color: #ef5350; }
+    }
   </style>
 </head>
 <body>
@@ -239,6 +305,21 @@
   <div id="page-loading" class="loading-page">Loading...</div>
   <div id="page-content" style="display:none">
     <div id="disabled-banner" class="disabled-banner" style="display:none"></div>
+
+    <div id="build-progress" class="build-progress" style="display:none">
+      <h2>Build Progress</h2>
+      <div class="build-steps">
+        <span class="build-step" id="step-prd">PRD</span>
+        <span class="build-step" id="step-erd">ERD</span>
+        <span class="build-step" id="step-app">App</span>
+        <span class="build-step" id="step-ready">Ready</span>
+      </div>
+      <div id="build-error" class="build-error" style="display:none">
+        <span class="error-msg" id="build-error-msg"></span>
+        <button class="btn btn-primary" id="retry-btn">Retry Build</button>
+      </div>
+    </div>
+
     <div class="header">
       <input type="text" id="app-title" placeholder="App title">
       <div class="header-actions">
@@ -375,6 +456,101 @@
       </table>`;
     }
 
+    // === Build Progress Polling ===
+    let buildPollTimer = null;
+
+    function updateBuildProgress(status, failureReason, hasPrd, hasErd) {
+      const progressEl = document.getElementById("build-progress");
+      const errorEl = document.getElementById("build-error");
+      const stepPrd = document.getElementById("step-prd");
+      const stepErd = document.getElementById("step-erd");
+      const stepApp = document.getElementById("step-app");
+      const stepReady = document.getElementById("step-ready");
+      const openLink = document.getElementById("open-app-link");
+
+      // Reset all steps
+      [stepPrd, stepErd, stepApp, stepReady].forEach(el => el.className = "build-step");
+      errorEl.style.display = "none";
+
+      if (status === "ready") {
+        progressEl.style.display = "none";
+        openLink.style.pointerEvents = "";
+        openLink.style.opacity = "";
+        return;
+      }
+
+      progressEl.style.display = "";
+      openLink.style.pointerEvents = "none";
+      openLink.style.opacity = "0.5";
+
+      if (status === "building_prd") {
+        stepPrd.className = "build-step active";
+      } else if (status === "building_erd") {
+        stepPrd.className = "build-step done";
+        stepErd.className = "build-step active";
+      } else if (status === "building_app") {
+        stepPrd.className = "build-step done";
+        stepErd.className = "build-step done";
+        stepApp.className = "build-step active";
+      } else if (status === "failed") {
+        // Mark completed steps as done, failed step based on what artifacts exist
+        if (hasPrd) stepPrd.className = "build-step done";
+        else { stepPrd.className = "build-step failed"; }
+        if (hasErd) stepErd.className = "build-step done";
+        else if (hasPrd) stepErd.className = "build-step failed";
+        if (hasPrd && hasErd) stepApp.className = "build-step failed";
+
+        errorEl.style.display = "";
+        document.getElementById("build-error-msg").textContent = failureReason || "Build failed";
+      }
+
+      // Refresh doc links as artifacts become available
+      if (appData) {
+        appData.prd = hasPrd ? (appData.prd || "generated") : "";
+        appData.erd = hasErd ? (appData.erd || "generated") : "";
+        loadDocLinks();
+      }
+    }
+
+    async function pollBuildStatus() {
+      try {
+        const res = await authFetch(`/api/apps/${appId}/build-status`);
+        if (!res.ok) return;
+        const data = await safeJson(res);
+
+        updateBuildProgress(data.build_status, data.failure_reason, data.has_prd, data.has_erd);
+
+        if (data.build_status === "ready") {
+          stopBuildPolling();
+          // Refresh full app data
+          const appsRes = await authFetch("/api/apps");
+          if (appsRes.ok) {
+            const apps = await safeJson(appsRes);
+            appData = apps.find(a => a.id === appId);
+            if (appData) {
+              renderCredentials();
+              loadDocLinks();
+              renderSpendAndDisabled();
+            }
+          }
+        } else if (data.build_status === "failed") {
+          stopBuildPolling();
+        }
+      } catch { /* ignore poll errors */ }
+    }
+
+    function startBuildPolling() {
+      if (buildPollTimer) return;
+      buildPollTimer = setInterval(pollBuildStatus, 3000);
+    }
+
+    function stopBuildPolling() {
+      if (buildPollTimer) {
+        clearInterval(buildPollTimer);
+        buildPollTimer = null;
+      }
+    }
+
     async function loadApp() {
       try {
         const res = await authFetch("/api/apps");
@@ -392,6 +568,15 @@
         renderSpendAndDisabled();
         renderCredentials();
         loadDocLinks();
+
+        // Check if build is in progress
+        const buildStatus = appData.build_status || "ready";
+        if (buildStatus !== "ready") {
+          updateBuildProgress(buildStatus, appData.failure_reason, Boolean(appData.prd), Boolean(appData.erd));
+          if (buildStatus !== "failed") {
+            startBuildPolling();
+          }
+        }
 
         const reqRes = await authFetch(`/api/apps/${appId}/edit-requests`);
         const requests = reqRes.ok ? await safeJson(reqRes) : [];
@@ -696,6 +881,24 @@
         renderSpendAndDisabled();
         showToast(action === "disable" ? "App disabled" : "App enabled");
       } catch (e) { showToast("Error: " + e.message); }
+    });
+
+    // Retry build
+    document.getElementById("retry-btn").addEventListener("click", async () => {
+      const btn = document.getElementById("retry-btn");
+      btn.disabled = true;
+      try {
+        const res = await authFetch(`/api/apps/${appId}/retry`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+        });
+        if (!res.ok) { const d = await safeJson(res); throw new Error(d.error); }
+        // Reset UI and start polling
+        updateBuildProgress("building_prd", "", false, false);
+        startBuildPolling();
+        showToast("Build restarted");
+      } catch (e) { showToast("Error: " + e.message); }
+      btn.disabled = false;
     });
 
     loadApp();

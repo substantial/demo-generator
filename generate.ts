@@ -7,6 +7,9 @@ import {
   getAllAppSchemas,
   updateAppHtml,
   updateAppPocPlan,
+  updateAppPrd,
+  updateAppErd,
+  updateAppBuildStatus,
   addColumnToTable,
   insertRow,
   getFullTableName,
@@ -1363,5 +1366,43 @@ Number tickets sequentially (TICKET-001, TICKET-002, etc.). Be specific and acti
   // Store it
   updateAppPocPlan(appId, block.text);
   return block.text;
+}
+
+// === Background Generation (fire-and-forget) ===
+
+export function backgroundGenerate(
+  appId: string,
+  title: string,
+  description: string,
+  client: Anthropic,
+  context?: string,
+): void {
+  (async () => {
+    try {
+      console.log(`[bg-gen] Starting background generation for ${appId}: "${title}"`);
+
+      // Phase 1: PRD
+      updateAppBuildStatus(appId, "building_prd");
+      const prd = await generatePrd(description, title, client, appId, context);
+      updateAppPrd(appId, prd);
+      console.log(`[bg-gen] PRD complete for ${appId}`);
+
+      // Phase 2: ERD
+      updateAppBuildStatus(appId, "building_erd");
+      const erd = await generateErd(prd, title, client, appId, context);
+      updateAppErd(appId, erd);
+      console.log(`[bg-gen] ERD complete for ${appId}`);
+
+      // Phase 3: App
+      updateAppBuildStatus(appId, "building_app");
+      await generateApp({ title, body: description, prd, erd, context }, client, appId);
+      // saveApp (called inside generateApp) already sets build_status to 'ready'
+      console.log(`[bg-gen] Completed generation for ${appId}`);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Unknown error";
+      console.error(`[bg-gen] Failed generation for ${appId}:`, msg);
+      updateAppBuildStatus(appId, "failed", msg);
+    }
+  })();
 }
 

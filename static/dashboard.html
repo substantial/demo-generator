@@ -90,38 +90,6 @@
     .generate-form button:disabled { opacity: 0.5; cursor: not-allowed; }
     .generate-status { margin-top: 0.5rem; font-size: 0.875rem; color: var(--text-secondary); }
     .generate-status.error { color: var(--danger); }
-    .progress-stages { display: flex; gap: 0.5rem; margin-top: 0.75rem; flex-wrap: wrap; }
-    .progress-stage {
-      padding: 0.35rem 0.75rem;
-      border-radius: 20px;
-      font-size: 0.8rem;
-      background: var(--surface-alt);
-      border: 1px solid var(--border);
-      color: var(--text-muted);
-      transition: all 0.3s;
-    }
-    .progress-stage.active {
-      background: color-mix(in srgb, var(--accent) 15%, var(--surface));
-      border-color: var(--accent);
-      color: var(--accent);
-    }
-    .progress-stage.done {
-      background: var(--success-bg);
-      border-color: var(--success-border);
-      color: var(--success-text);
-    }
-    .progress-stage.active::after {
-      content: "";
-      display: inline-block;
-      width: 12px;
-      height: 12px;
-      border: 2px solid var(--accent);
-      border-top-color: transparent;
-      border-radius: 50%;
-      animation: spin 0.8s linear infinite;
-      vertical-align: middle;
-      margin-left: 0.4rem;
-    }
     .grid {
       display: grid;
       grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
@@ -254,16 +222,6 @@
       box-shadow: 0 4px 16px var(--shadow);
     }
     .toast.show { opacity: 1; }
-    .success-box {
-      background: var(--success-bg);
-      border: 1px solid var(--success-border);
-      border-radius: 6px;
-      padding: 1rem;
-      margin-top: 0.75rem;
-    }
-    .success-box h3 { font-size: 1rem; color: var(--success-text); margin-bottom: 0.5rem; }
-    .success-box .cred-line { font-family: monospace; font-size: 0.875rem; margin: 0.25rem 0; }
-    .success-box a { color: var(--accent); text-decoration: underline; }
     .spinner {
       text-align: center;
       padding: 3rem;
@@ -365,7 +323,8 @@
         const spendClass = spend > 50 ? 'over' : spend > 40 ? 'warn' : '';
         const spendBadge = `<span class="spend-badge ${spendClass}">$${spend.toFixed(2)}</span>`;
         const disabledBadge = a.disabled ? '<span class="disabled-badge">Disabled</span>' : '';
-        const buildBadge = a.build_status === 'building' ? '<span class="building-badge">Building...</span>'
+        const isBuilding = a.build_status && a.build_status.startsWith('building');
+        const buildBadge = isBuilding ? '<span class="building-badge">Building...</span>'
           : a.build_status === 'failed' ? `<span class="failed-badge" title="${escapeHtml(a.failure_reason || '')}">Failed</span>`
           : '';
         const magicBtn = a.cred_username
@@ -417,29 +376,7 @@
 
       btn.disabled = true;
       status.className = "generate-status";
-      status.innerHTML = `<div class="progress-stages">
-        <span class="progress-stage active" id="stage-prd">PRD</span>
-        <span class="progress-stage" id="stage-erd">ERD</span>
-        <span class="progress-stage" id="stage-build">Building</span>
-        <span class="progress-stage" id="stage-done">Complete</span>
-      </div>`;
-
-      function setStage(activeId) {
-        const stages = ["stage-prd", "stage-erd", "stage-build", "stage-done"];
-        let pastActive = true;
-        for (const id of stages) {
-          const el = document.getElementById(id);
-          if (!el) continue;
-          if (id === activeId) {
-            el.className = "progress-stage active";
-            pastActive = false;
-          } else if (pastActive) {
-            el.className = "progress-stage done";
-          } else {
-            el.className = "progress-stage";
-          }
-        }
-      }
+      status.textContent = "Starting generation...";
 
       try {
         const res = await authFetch("/api/apps", {
@@ -449,62 +386,14 @@
         });
 
         if (!res.ok) {
-          const text = await res.text();
-          let errMsg = "Generation failed";
-          try { errMsg = JSON.parse(text).error || errMsg; } catch {}
-          throw new Error(errMsg);
+          const data = await safeJson(res);
+          throw new Error(data.error || "Generation failed");
         }
 
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buf = "";
-        let done = false;
-
-        while (!done) {
-          const result = await reader.read();
-          if (result.done) { done = true; break; }
-          buf += decoder.decode(result.value, { stream: true });
-          const lines = buf.split("\n");
-          buf = lines.pop() || "";
-          let evtType = "";
-          for (const line of lines) {
-            if (line.startsWith("event: ")) {
-              evtType = line.slice(7).trim();
-            } else if (line.startsWith("data: ")) {
-              try {
-                const ev = JSON.parse(line.slice(6));
-                if (evtType === "error" || ev.step === "error") {
-                  throw new Error(ev.message || "Generation failed");
-                }
-                if (ev.step === "prd" || evtType === "prd") setStage("stage-prd");
-                if (ev.step === "prd_complete" || evtType === "prd_complete") setStage("stage-erd");
-                if (ev.step === "erd" || evtType === "erd") setStage("stage-erd");
-                if (ev.step === "erd_complete" || evtType === "erd_complete") setStage("stage-build");
-                if (ev.step === "generating" || evtType === "generating") setStage("stage-build");
-                if (ev.step === "complete" || evtType === "complete") {
-                  setStage("stage-done");
-                  // Mark all stages as done
-                  document.querySelectorAll(".progress-stage").forEach(el => el.className = "progress-stage done");
-                  const box = document.createElement("div");
-                  box.className = "success-box";
-                  box.innerHTML = `<h3>App generated!</h3>
-                    <div class="cred-line"><strong>Username:</strong> ${escapeHtml(ev.credentials?.username || "")}</div>
-                    <div class="cred-line"><strong>Password:</strong> ${escapeHtml(ev.credentials?.password || "")}</div>
-                    <p style="margin-top:0.5rem"><a href="/apps/${ev.appId}">Open app &rarr;</a> | <a href="/dashboard/apps/${ev.appId}">App detail &rarr;</a></p>`;
-                  status.appendChild(box);
-                  btn.disabled = false;
-                  loadApps();
-                  return;
-                }
-              } catch (pe) {
-                if (pe.message && pe.message !== "Generation failed") throw pe;
-              }
-            }
-          }
-        }
-        btn.disabled = false;
+        const data = await safeJson(res);
+        // Redirect to app detail page where build progress is shown
+        window.location.href = `/dashboard/apps/${data.appId}`;
       } catch (e) {
-        status.innerHTML = "";
         status.textContent = e.message;
         status.className = "generate-status error";
         btn.disabled = false;

@@ -10,7 +10,6 @@ import {
   logUsage,
   isAppDisabled,
   createAppPlaceholder,
-  updateAppBuildStatus,
   getAppBuildStatus,
 } from "./db.ts";
 import {
@@ -18,6 +17,7 @@ import {
   generateErd,
   generateApp,
   editApp,
+  backgroundGenerate,
   type EditProgressEvent,
 } from "./generate.ts";
 
@@ -294,23 +294,9 @@ export function createExternalApiRoutes(anthropicClient: Anthropic): Hono {
     const appId = crypto.randomUUID();
     createAppPlaceholder(appId, title, description);
 
-    // Fire-and-forget: kick off generation in the background
-    (async () => {
-      try {
-        console.log(`[async-gen] Starting background generation for ${appId}: "${title}"`);
-        const prd = await generatePrd(description, title, anthropicClient, undefined, context);
-        const erd = await generateErd(prd, title, anthropicClient, undefined, context);
-        await generateApp({ title, body: description, prd, erd, context }, anthropicClient, appId);
-        // saveApp (called inside generateApp) already sets build_status to 'ready'
-        console.log(`[async-gen] Completed generation for ${appId}`);
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : "Unknown error";
-        console.error(`[async-gen] Failed generation for ${appId}:`, msg);
-        updateAppBuildStatus(appId, "failed", msg);
-      }
-    })();
+    backgroundGenerate(appId, title, description, anthropicClient, context);
 
-    return c.json({ appId, status: "building" });
+    return c.json({ appId, status: "building_prd" });
   });
 
   // GET /api/external/apps/:appId/status — check build status
@@ -324,6 +310,8 @@ export function createExternalApiRoutes(anthropicClient: Anthropic): Hono {
       title: status.title,
       build_status: status.build_status || "ready",
       failure_reason: status.failure_reason || "",
+      has_prd: status.has_prd,
+      has_erd: status.has_erd,
       ...(status.build_status === "ready" || !status.build_status
         ? { url: `${BASE_URL}/apps/${status.id}` }
         : {}),
