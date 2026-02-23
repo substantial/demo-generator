@@ -11,6 +11,8 @@ import { generateApp, editApp, extractUxLesson, generatePrd, generateErd, regene
 import { crud } from "./crud.ts";
 import { createChatRoutes } from "./chat.ts";
 import { createAgentRoutes } from "./agents.ts";
+import { createExternalApiRoutes } from "./external-api.ts";
+import { createMcpHandler } from "./mcp-server.ts";
 
 // Load environment variables from .env file (local dev only)
 try {
@@ -650,5 +652,11 @@ app.get("/apps/:appId", async (c) => {
     .replace(/\{\{PLACEHOLDER\}\}/g, isRoot ? 'Describe a change...' : 'Suggest a change...');
   return c.html(wrapper);
 });
+
+// External API for Swerk integration (X-API-Key auth)
+app.route("/", createExternalApiRoutes(client));
+
+// MCP server endpoint
+app.post("/mcp", createMcpHandler(client));
 
 Deno.serve({ port: 8000, hostname: "0.0.0.0" }, app.fetch);
