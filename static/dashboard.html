@@ -212,8 +212,31 @@
       border: 1px solid #f5c6cb;
       color: #721c24;
     }
+    .building-badge {
+      display: inline-block;
+      font-size: 0.75rem;
+      font-weight: 600;
+      padding: 0.15rem 0.5rem;
+      border-radius: 10px;
+      background: #fff3cd;
+      border: 1px solid #ffc107;
+      color: #856404;
+    }
+    .failed-badge {
+      display: inline-block;
+      font-size: 0.75rem;
+      font-weight: 600;
+      padding: 0.15rem 0.5rem;
+      border-radius: 10px;
+      background: #f8d7da;
+      border: 1px solid #dc3545;
+      color: #721c24;
+      cursor: help;
+    }
     @media (prefers-color-scheme: dark) {
       .disabled-badge { background: #3d0a0a; border-color: #661515; color: #ef5350; }
+      .building-badge { background: #3d3000; border-color: #665200; color: #ffc107; }
+      .failed-badge { background: #3d0a0a; border-color: #661515; color: #ef5350; }
     }
     .toast {
       position: fixed;
@@ -342,6 +365,9 @@
         const spendClass = spend > 50 ? 'over' : spend > 40 ? 'warn' : '';
         const spendBadge = `<span class="spend-badge ${spendClass}">$${spend.toFixed(2)}</span>`;
         const disabledBadge = a.disabled ? '<span class="disabled-badge">Disabled</span>' : '';
+        const buildBadge = a.build_status === 'building' ? '<span class="building-badge">Building...</span>'
+          : a.build_status === 'failed' ? `<span class="failed-badge" title="${escapeHtml(a.failure_reason || '')}">Failed</span>`
+          : '';
         const magicBtn = a.cred_username
           ? `<button class="btn-primary" data-action="magic" data-id="${a.id}">Copy Magic Link</button>`
           : '';
@@ -352,7 +378,7 @@
           <a class="card-link" href="/dashboard/apps/${a.id}">
             <h3>${escapeHtml(a.title)}</h3>
             <div class="meta">${escapeHtml(a.created_at)}</div>
-            <div class="badge-row">${spendBadge}${disabledBadge}</div>
+            <div class="badge-row">${spendBadge}${disabledBadge}${buildBadge}</div>
             ${desc}
           </a>
           <div class="card-actions">${magicBtn}${toggleBtn}</div>

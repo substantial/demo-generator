@@ -9,6 +9,9 @@ import {
   saveEditRequest,
   logUsage,
   isAppDisabled,
+  createAppPlaceholder,
+  updateAppBuildStatus,
+  getAppBuildStatus,
 } from "./db.ts";
 import {
   generatePrd,
@@ -264,6 +267,68 @@ export function createExternalApiRoutes(anthropicClient: Anthropic): Hono {
       }
     }
   );
+
+  // POST /api/external/apps/async — create a new app (non-blocking, fire-and-forget)
+  api.post("/api/external/apps/async", async (c) => {
+    let body: { title?: string; body?: string; context?: string };
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: "Invalid JSON body" }, 400);
+    }
+
+    if (!body.body) {
+      return c.json({ error: "body (app description) is required" }, 400);
+    }
+
+    const title =
+      body.title ||
+      body.body
+        .split("\n")[0]
+        .replace(/^#+\s*/, "")
+        .slice(0, 100) ||
+      "Untitled App";
+    const description = body.body;
+    const context = body.context;
+
+    const appId = crypto.randomUUID();
+    createAppPlaceholder(appId, title, description);
+
+    // Fire-and-forget: kick off generation in the background
+    (async () => {
+      try {
+        console.log(`[async-gen] Starting background generation for ${appId}: "${title}"`);
+        const prd = await generatePrd(description, title, anthropicClient, undefined, context);
+        const erd = await generateErd(prd, title, anthropicClient, undefined, context);
+        await generateApp({ title, body: description, prd, erd, context }, anthropicClient, appId);
+        // saveApp (called inside generateApp) already sets build_status to 'ready'
+        console.log(`[async-gen] Completed generation for ${appId}`);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : "Unknown error";
+        console.error(`[async-gen] Failed generation for ${appId}:`, msg);
+        updateAppBuildStatus(appId, "failed", msg);
+      }
+    })();
+
+    return c.json({ appId, status: "building" });
+  });
+
+  // GET /api/external/apps/:appId/status — check build status
+  api.get("/api/external/apps/:appId/status", (c) => {
+    const appId = c.req.param("appId");
+    const status = getAppBuildStatus(appId);
+    if (!status) return c.json({ error: "App not found" }, 404);
+
+    return c.json({
+      id: status.id,
+      title: status.title,
+      build_status: status.build_status || "ready",
+      failure_reason: status.failure_reason || "",
+      ...(status.build_status === "ready" || !status.build_status
+        ? { url: `${BASE_URL}/apps/${status.id}` }
+        : {}),
+    });
+  });
 
   return api;
 }

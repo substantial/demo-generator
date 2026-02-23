@@ -22,6 +22,10 @@ try { db.exec(`ALTER TABLE apps ADD COLUMN poc_plan TEXT DEFAULT ''`); } catch {
 try { db.exec(`ALTER TABLE apps ADD COLUMN disabled INTEGER DEFAULT 0`); } catch {}
 try { db.exec(`ALTER TABLE apps ADD COLUMN disabled_reason TEXT DEFAULT ''`); } catch {}
 
+// Migration: add build_status/failure_reason columns for async generation
+try { db.exec(`ALTER TABLE apps ADD COLUMN build_status TEXT DEFAULT 'ready'`); } catch {}
+try { db.exec(`ALTER TABLE apps ADD COLUMN failure_reason TEXT DEFAULT ''`); } catch {}
+
 // Create meta tables
 db.exec(`
   CREATE TABLE IF NOT EXISTS apps (
@@ -378,11 +382,13 @@ export function listAppsWithCredentials(): {
   cred_password: string | null;
   disabled: number;
   disabled_reason: string;
+  build_status: string;
+  failure_reason: string;
 }[] {
   return db
     .prepare(
       `SELECT a.id, a.title, a.description, a.prd, a.erd, a.poc_plan, a.github_issue_url, a.created_at,
-              a.disabled, a.disabled_reason,
+              a.disabled, a.disabled_reason, a.build_status, a.failure_reason,
               ac.username AS cred_username, ac.password AS cred_password
        FROM apps a
        LEFT JOIN app_credentials ac ON a.id = ac.app_id
@@ -401,6 +407,8 @@ export function listAppsWithCredentials(): {
     cred_password: string | null;
     disabled: number;
     disabled_reason: string;
+    build_status: string;
+    failure_reason: string;
   }[];
 }
 
@@ -698,10 +706,53 @@ export function saveApp(
   prd?: string,
   erd?: string,
 ): void {
+  // Use upsert: if a placeholder row exists (from async creation), update it; otherwise insert
+  const existing = db.prepare("SELECT id FROM apps WHERE id = ?").get(id);
+  if (existing) {
+    db.exec(
+      `UPDATE apps SET github_issue_url = ?, title = ?, html = ?, description = ?, prd = ?, erd = ?, build_status = 'ready', updated_at = datetime('now') WHERE id = ?`,
+      [issueUrl, title, html, description ?? "", prd ?? "", erd ?? "", id],
+    );
+  } else {
+    db.exec(
+      `INSERT INTO apps (id, github_issue_url, title, html, description, prd, erd, build_status) VALUES (?, ?, ?, ?, ?, ?, ?, 'ready')`,
+      [id, issueUrl, title, html, description ?? "", prd ?? "", erd ?? ""],
+    );
+  }
+}
+
+export function createAppPlaceholder(
+  id: string,
+  title: string,
+  description: string,
+): void {
   db.exec(
-    `INSERT INTO apps (id, github_issue_url, title, html, description, prd, erd) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    [id, issueUrl, title, html, description ?? "", prd ?? "", erd ?? ""],
+    `INSERT INTO apps (id, github_issue_url, title, html, description, build_status) VALUES (?, ?, ?, ?, ?, ?)`,
+    [id, "manual-input", title, "", description, "building"],
   );
+}
+
+export function updateAppBuildStatus(
+  appId: string,
+  status: "building" | "ready" | "failed",
+  failureReason?: string,
+): void {
+  db.exec(
+    `UPDATE apps SET build_status = ?, failure_reason = ?, updated_at = datetime('now') WHERE id = ?`,
+    [status, failureReason ?? "", appId],
+  );
+}
+
+export function getAppBuildStatus(appId: string): {
+  id: string;
+  title: string;
+  build_status: string;
+  failure_reason: string;
+} | null {
+  const row = db
+    .prepare("SELECT id, title, build_status, failure_reason FROM apps WHERE id = ?")
+    .get(appId) as { id: string; title: string; build_status: string; failure_reason: string } | undefined;
+  return row ?? null;
 }
 
 export function getApp(id: string): {

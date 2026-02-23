@@ -666,6 +666,7 @@ function randomAlphanumeric(len: number): string {
 export async function generateApp(
   input: GenerateInput,
   client: Anthropic,
+  existingAppId?: string,
 ): Promise<{ appId: string; credentials: { username: string; password: string } }> {
   if (!input.body) {
     throw new Error("App description (body) is required");
@@ -755,7 +756,7 @@ export async function generateApp(
   }
 
   const parsed = parseResponse(block.text, "generateApp", wasTruncated);
-  const appId = crypto.randomUUID();
+  const appId = existingAppId ?? crypto.randomUUID();
   console.log(`[generate] App ID: ${appId}`);
 
   console.log(
