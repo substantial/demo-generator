@@ -175,6 +175,21 @@ db.exec(`
   )
 `);
 
+// External data connections for apps
+db.exec(`
+  CREATE TABLE IF NOT EXISTS app_connections (
+    id TEXT PRIMARY KEY,
+    app_id TEXT NOT NULL,
+    type TEXT NOT NULL,
+    name TEXT NOT NULL,
+    connection_string TEXT,
+    config TEXT DEFAULT '{}',
+    status TEXT NOT NULL DEFAULT 'active',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )
+`);
+
 // === Spend Tracking ===
 
 const MODEL_PRICING: Record<string, { input: number; output: number }> = {
@@ -345,6 +360,7 @@ export function deleteApp(appId: string): void {
   }
   db.exec(`DELETE FROM mcp_servers WHERE app_id = ?`, [appId]);
 
+  db.exec(`DELETE FROM app_connections WHERE app_id = ?`, [appId]);
   db.exec(`DELETE FROM usage_log WHERE app_id = ?`, [appId]);
   db.exec(`DELETE FROM apps WHERE id = ?`, [appId]);
 }
@@ -1215,6 +1231,58 @@ export function listAgentConversations(agentId: string): {
     created_at: string;
     updated_at: string;
   }[];
+}
+
+// === App Connections CRUD ===
+
+export interface AppConnection {
+  id: string;
+  app_id: string;
+  type: string;
+  name: string;
+  connection_string: string | null;
+  config: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export function createAppConnection(
+  id: string,
+  appId: string,
+  type: string,
+  name: string,
+  connectionString?: string,
+  config?: Record<string, unknown>,
+): AppConnection {
+  db.exec(
+    `INSERT INTO app_connections (id, app_id, type, name, connection_string, config) VALUES (?, ?, ?, ?, ?, ?)`,
+    [id, appId, type, name, connectionString ?? null, JSON.stringify(config ?? {})],
+  );
+  return getAppConnection(id)!;
+}
+
+export function getAppConnection(id: string): AppConnection | undefined {
+  return db
+    .prepare("SELECT * FROM app_connections WHERE id = ?")
+    .get(id) as AppConnection | undefined;
+}
+
+export function listAppConnections(appId: string): AppConnection[] {
+  return db
+    .prepare("SELECT * FROM app_connections WHERE app_id = ? ORDER BY created_at DESC")
+    .all(appId) as AppConnection[];
+}
+
+export function updateAppConnectionStatus(id: string, status: string): void {
+  db.exec(
+    `UPDATE app_connections SET status = ?, updated_at = datetime('now') WHERE id = ?`,
+    [status, id],
+  );
+}
+
+export function deleteAppConnection(id: string): void {
+  db.exec(`DELETE FROM app_connections WHERE id = ?`, [id]);
 }
 
 export { db };

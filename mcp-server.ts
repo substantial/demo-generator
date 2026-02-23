@@ -75,8 +75,9 @@ function createMcpServerInstance(anthropicClient: Anthropic): McpServer {
     {
       title: z.string().optional().describe("App title"),
       body: z.string().describe("App description / requirements"),
+      context: z.string().optional().describe("Data & business context for realistic seed data generation"),
     },
-    async ({ title, body }) => {
+    async ({ title, body, context }) => {
       if (!body) {
         return { content: [{ type: "text" as const, text: "body is required" }], isError: true };
       }
@@ -91,12 +92,12 @@ function createMcpServerInstance(anthropicClient: Anthropic): McpServer {
 
       try {
         // Generate PRD
-        const prd = await generatePrd(body, appTitle, anthropicClient);
+        const prd = await generatePrd(body, appTitle, anthropicClient, undefined, context);
         // Generate ERD
-        const erd = await generateErd(prd, appTitle, anthropicClient);
+        const erd = await generateErd(prd, appTitle, anthropicClient, undefined, context);
         // Generate App
         const result = await generateApp(
-          { title: appTitle, body, prd, erd },
+          { title: appTitle, body, prd, erd, context },
           anthropicClient
         );
 

@@ -12,6 +12,7 @@ import { crud } from "./crud.ts";
 import { createChatRoutes } from "./chat.ts";
 import { createAgentRoutes } from "./agents.ts";
 import { createExternalApiRoutes } from "./external-api.ts";
+import { createConnectionRoutes } from "./connections-api.ts";
 import { createMcpHandler } from "./mcp-server.ts";
 
 // Load environment variables from .env file (local dev only)
@@ -126,7 +127,7 @@ app.get("/api/apps", authMiddleware, requireRoot, (c) => {
 });
 
 app.post("/api/apps", authMiddleware, requireRoot, async (c) => {
-  let body: { title?: string; body?: string };
+  let body: { title?: string; body?: string; context?: string };
   try {
     body = await c.req.json();
   } catch {
@@ -139,22 +140,23 @@ app.post("/api/apps", authMiddleware, requireRoot, async (c) => {
 
   const title = body.title || body.body.split("\n")[0].replace(/^#+\s*/, "").slice(0, 100) || "Untitled App";
   const description = body.body;
+  const context = body.context;
 
   return streamSSE(c, async (stream) => {
     try {
       // Stage 1: Generate PRD
       await stream.writeSSE({ event: "prd", data: JSON.stringify({ step: "prd", message: "Generating Product Requirements..." }) });
-      const prd = await generatePrd(description, title, client);
+      const prd = await generatePrd(description, title, client, undefined, context);
       await stream.writeSSE({ event: "prd_complete", data: JSON.stringify({ step: "prd_complete", message: "PRD complete" }) });
 
       // Stage 2: Generate ERD
       await stream.writeSSE({ event: "erd", data: JSON.stringify({ step: "erd", message: "Generating Engineering Requirements..." }) });
-      const erd = await generateErd(prd, title, client);
+      const erd = await generateErd(prd, title, client, undefined, context);
       await stream.writeSSE({ event: "erd_complete", data: JSON.stringify({ step: "erd_complete", message: "ERD complete" }) });
 
       // Stage 3: Generate App
       await stream.writeSSE({ event: "generating", data: JSON.stringify({ step: "generating", message: "Building app from requirements..." }) });
-      const result = await generateApp({ title, body: description, prd, erd }, client);
+      const result = await generateApp({ title, body: description, prd, erd, context }, client);
 
       // Stage 4: Complete
       await stream.writeSSE({ event: "complete", data: JSON.stringify({ step: "complete", appId: result.appId, credentials: result.credentials }) });
@@ -574,6 +576,8 @@ app.use("/api/apps/:appId/guidelines/*", openOrAuth);
 app.use("/api/apps/:appId/guidelines", openOrAuth);
 app.use("/api/apps/:appId/mcp-servers/*", openOrAuth);
 app.use("/api/apps/:appId/mcp-servers", openOrAuth);
+app.use("/api/apps/:appId/connections/*", openOrAuth);
+app.use("/api/apps/:appId/connections", openOrAuth);
 
 // --- Models endpoint: any authenticated user ---
 app.use("/api/models", authMiddleware);
@@ -583,6 +587,9 @@ app.route("/", createChatRoutes(client, openaiClient));
 
 // --- Agent routes ---
 app.route("/", createAgentRoutes(client));
+
+// --- Connection routes ---
+app.route("/", createConnectionRoutes());
 
 // --- CRUD routes ---
 app.route("/", crud);

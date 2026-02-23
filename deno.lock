@@ -17,6 +17,7 @@
     "npm:@modelcontextprotocol/sdk@*": "1.26.0_zod@4.3.5_hono@4.12.2_ajv@8.18.0_express@5.2.1",
     "npm:@types/node@*": "18.19.130",
     "npm:openai@4": "4.104.0_zod@4.3.5",
+    "npm:postgres@^3.4.0": "3.4.8",
     "npm:zod@*": "4.3.5"
   },
   "jsr": {
@@ -571,6 +572,9 @@
     "pkce-challenge@5.0.1": {
       "integrity": "sha512-wQ0b/W4Fr01qtpHlqSqspcj3EhBvimsdh0KlHhH8HRZnMsEa0ea2fTULOXOS9ccQr3om+GcGRk4e+isrZWV8qQ=="
     },
+    "postgres@3.4.8": {
+      "integrity": "sha512-d+JFcLM17njZaOLkv6SCev7uoLaBtfK86vMUXhW1Z4glPWh4jozno9APvW/XKFJ3CCxVoC7OL38BqRydtu5nGg=="
+    },
     "proxy-addr@2.0.7": {
       "integrity": "sha512-llQsMLSUDUPT44jdrU/O37qlnifitDP+ZwrmmZcoSKyLKvtZxpyV0n2/bD/N4tBAAZ/gJEdZU7KMraoK1+XYAg==",
       "dependencies": [
@@ -761,6 +765,7 @@
       "npm:@anthropic-ai/sdk@*",
       "npm:@modelcontextprotocol/sdk@*",
       "npm:openai@4",
+      "npm:postgres@^3.4.0",
       "npm:zod@*"
     ]
   }

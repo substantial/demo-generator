@@ -24,6 +24,7 @@ export interface GenerateInput {
   body?: string;
   prd?: string;
   erd?: string;
+  context?: string;
 }
 
 const SYSTEM_PROMPT = `You are a full-stack web app generator. Given a description (from a GitHub issue or direct input), you produce a complete single-page web app with realistic seed data.
@@ -695,6 +696,9 @@ export async function generateApp(
   const startTime = Date.now();
 
   let userContent = `App Request: ${title}\n\n${body}`;
+  if (input.context) {
+    userContent += `\n\n--- DATA & BUSINESS CONTEXT ---\n${input.context}`;
+  }
   if (input.prd) {
     userContent += `\n\n--- PRODUCT REQUIREMENTS DOCUMENT ---\n${input.prd}`;
   }
@@ -1092,9 +1096,14 @@ export async function generatePrd(
   title: string,
   client: Anthropic,
   appId?: string,
+  context?: string,
 ): Promise<string> {
   console.log(`[generate] Generating PRD for "${title}"...`);
   const startTime = Date.now();
+
+  const contextBlock = context
+    ? `\nDATA & BUSINESS CONTEXT:\n${context}\n`
+    : "";
 
   const response = await client.messages.create({
     model: "claude-opus-4-6",
@@ -1107,7 +1116,7 @@ export async function generatePrd(
 App Title: ${title}
 App Description:
 ${description}
-
+${contextBlock}
 ${PLATFORM_CONSTRAINTS}
 
 Return a well-structured markdown PRD with these sections:
@@ -1141,11 +1150,15 @@ export async function generateErd(
   title: string,
   client: Anthropic,
   appId?: string,
+  context?: string,
 ): Promise<string> {
   console.log(`[generate] Generating ERD for "${title}"...`);
   const startTime = Date.now();
 
   const uxLessonsBlock = buildUxLessonsBlock();
+  const contextBlock = context
+    ? `\nDATA & BUSINESS CONTEXT (the Seed Data Plan MUST reflect these patterns — use real seasonal trends, realistic industry-specific values, and appropriate date ranges):\n${context}\n`
+    : "";
 
   const response = await client.messages.create({
     model: "claude-opus-4-6",
@@ -1159,7 +1172,7 @@ App Title: ${title}
 
 --- PRODUCT REQUIREMENTS DOCUMENT ---
 ${prd}
-
+${contextBlock}
 ${PLATFORM_CONSTRAINTS}
 ${uxLessonsBlock}
 

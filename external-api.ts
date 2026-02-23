@@ -77,7 +77,7 @@ export function createExternalApiRoutes(anthropicClient: Anthropic): Hono {
 
   // POST /api/external/apps — create a new app (SSE stream)
   api.post("/api/external/apps", async (c) => {
-    let body: { title?: string; body?: string };
+    let body: { title?: string; body?: string; context?: string };
     try {
       body = await c.req.json();
     } catch {
@@ -96,6 +96,7 @@ export function createExternalApiRoutes(anthropicClient: Anthropic): Hono {
         .slice(0, 100) ||
       "Untitled App";
     const description = body.body;
+    const context = body.context;
 
     return streamSSE(c, async (stream) => {
       try {
@@ -106,7 +107,7 @@ export function createExternalApiRoutes(anthropicClient: Anthropic): Hono {
             message: "Generating Product Requirements...",
           }),
         });
-        const prd = await generatePrd(description, title, anthropicClient);
+        const prd = await generatePrd(description, title, anthropicClient, undefined, context);
         await stream.writeSSE({
           event: "prd_complete",
           data: JSON.stringify({
@@ -122,7 +123,7 @@ export function createExternalApiRoutes(anthropicClient: Anthropic): Hono {
             message: "Generating Engineering Requirements...",
           }),
         });
-        const erd = await generateErd(prd, title, anthropicClient);
+        const erd = await generateErd(prd, title, anthropicClient, undefined, context);
         await stream.writeSSE({
           event: "erd_complete",
           data: JSON.stringify({
@@ -139,7 +140,7 @@ export function createExternalApiRoutes(anthropicClient: Anthropic): Hono {
           }),
         });
         const result = await generateApp(
-          { title, body: description, prd, erd },
+          { title, body: description, prd, erd, context },
           anthropicClient
         );
 

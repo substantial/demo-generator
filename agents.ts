@@ -31,6 +31,12 @@ import {
   getMessages,
   updateConversationTitle,
   logUsage,
+  createAppConnection,
+  listAppConnections,
+  getAppConnection,
+  getAllAppSchemas,
+  getFullTableName,
+  insertRow,
 } from "./db.ts";
 import { buildSystemContext, resolveModel } from "./chat.ts";
 import {
@@ -40,8 +46,162 @@ import {
   callTool,
   type NamespacedMcpTool,
 } from "./mcp.ts";
+import { queryExternalDb, fetchExternalApi } from "./connections.ts";
 
 const MAX_TOOL_ITERATIONS = 10;
+
+// Native tool definitions for external data connections
+const NATIVE_TOOLS: Anthropic.Tool[] = [
+  {
+    name: "save_connection",
+    description: "Save an external database or API connection for this app. Supported types: postgresql, rest_api.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        type: { type: "string", enum: ["postgresql", "rest_api"], description: "Connection type" },
+        name: { type: "string", description: "Human-readable name for this connection" },
+        connection_string: { type: "string", description: "Connection string (e.g. postgresql://user:pass@host/db) or base URL for REST API" },
+        config: { type: "object", description: "Optional config (api_key, headers, etc.)" },
+      },
+      required: ["type", "name", "connection_string"],
+    },
+  },
+  {
+    name: "list_connections",
+    description: "List all external data connections for this app.",
+    input_schema: { type: "object" as const, properties: {} },
+  },
+  {
+    name: "query_database",
+    description: "Execute a read-only SQL query against an external PostgreSQL database connection. Only SELECT queries are allowed.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        connection_id: { type: "string", description: "The connection ID to query" },
+        sql: { type: "string", description: "SQL SELECT query to execute" },
+      },
+      required: ["connection_id", "sql"],
+    },
+  },
+  {
+    name: "fetch_api",
+    description: "Make a GET request to an external REST API connection.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        connection_id: { type: "string", description: "The connection ID" },
+        path: { type: "string", description: "API path to fetch (e.g. /users or /orders?limit=10)" },
+      },
+      required: ["connection_id", "path"],
+    },
+  },
+  {
+    name: "import_data",
+    description: "Query an external database and import the results into this app's SQLite table. Maps columns automatically.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        connection_id: { type: "string", description: "The database connection ID" },
+        sql: { type: "string", description: "SQL SELECT query (or omit for SELECT * FROM target_table LIMIT 200)" },
+        target_table: { type: "string", description: "Name of the app's table to insert data into" },
+      },
+      required: ["connection_id", "target_table"],
+    },
+  },
+];
+
+const NATIVE_TOOL_NAMES = new Set(NATIVE_TOOLS.map((t) => t.name));
+
+async function handleNativeTool(
+  toolName: string,
+  input: Record<string, unknown>,
+  appId: string,
+): Promise<string> {
+  switch (toolName) {
+    case "save_connection": {
+      const id = crypto.randomUUID();
+      const conn = createAppConnection(
+        id,
+        appId,
+        input.type as string,
+        input.name as string,
+        input.connection_string as string,
+        (input.config as Record<string, unknown>) ?? undefined,
+      );
+      return JSON.stringify({ success: true, connection: { id: conn.id, name: conn.name, type: conn.type, status: conn.status } });
+    }
+    case "list_connections": {
+      const connections = listAppConnections(appId);
+      return JSON.stringify(connections.map((c) => ({
+        id: c.id,
+        name: c.name,
+        type: c.type,
+        status: c.status,
+        connection_string: c.connection_string ? c.connection_string.replace(/\/\/[^@]+@/, "//***@") : null,
+      })));
+    }
+    case "query_database": {
+      const result = await queryExternalDb(
+        input.connection_id as string,
+        input.sql as string,
+      );
+      return JSON.stringify(result);
+    }
+    case "fetch_api": {
+      const result = await fetchExternalApi(
+        input.connection_id as string,
+        input.path as string,
+      );
+      return JSON.stringify(result);
+    }
+    case "import_data": {
+      const connId = input.connection_id as string;
+      const targetTable = input.target_table as string;
+      const sql = (input.sql as string) || `SELECT * FROM ${targetTable} LIMIT 200`;
+
+      // Query external DB
+      const result = await queryExternalDb(connId, sql);
+      if (result.rows.length === 0) {
+        return JSON.stringify({ success: true, imported: 0, message: "No rows returned from query" });
+      }
+
+      // Get app's table schema to validate target exists
+      const schemas = getAllAppSchemas(appId);
+      const targetSchema = schemas.find((s) => s.tableName === targetTable);
+      if (!targetSchema) {
+        return JSON.stringify({ success: false, error: `Table "${targetTable}" not found in this app` });
+      }
+
+      // Map and insert rows
+      const ftn = getFullTableName(appId, targetTable);
+      const validColumns = new Set(targetSchema.columns.map((c) => c.name));
+      let imported = 0;
+      let failed = 0;
+
+      for (const row of result.rows) {
+        // Filter to only columns that exist in target table
+        const mapped: Record<string, unknown> = {};
+        for (const [key, val] of Object.entries(row)) {
+          if (validColumns.has(key)) {
+            mapped[key] = val;
+          }
+        }
+        if (Object.keys(mapped).length === 0) continue;
+
+        try {
+          insertRow(ftn, mapped);
+          imported++;
+        } catch {
+          failed++;
+        }
+      }
+
+      return JSON.stringify({ success: true, imported, failed, total: result.rows.length });
+    }
+    default:
+      throw new Error(`Unknown native tool: ${toolName}`);
+  }
+}
 
 interface AgentLoopResult {
   role: "assistant";
@@ -76,10 +236,14 @@ async function runAgentLoop(
   // Discover MCP tools
   const mcpServers = getAgentMcpServers(agentId);
   let tools: NamespacedMcpTool[] = [];
-  let anthropicTools: ReturnType<typeof mcpToolsToAnthropicTools> = [];
+  let anthropicTools: Anthropic.Tool[] = [];
+
+  // Always include native connection tools
+  anthropicTools.push(...NATIVE_TOOLS);
+
   if (mcpServers.length > 0) {
     tools = await discoverAllTools(mcpServers);
-    anthropicTools = mcpToolsToAnthropicTools(tools);
+    anthropicTools.push(...mcpToolsToAnthropicTools(tools) as Anthropic.Tool[]);
   }
 
   const model = resolveModel(modelOverride || agent.model);
@@ -98,7 +262,7 @@ async function runAgentLoop(
       max_tokens: 4096,
       system,
       messages: currentMessages,
-      ...(anthropicTools.length > 0 ? { tools: anthropicTools as Anthropic.Tool[] } : {}),
+      tools: anthropicTools,
       ...(temperature !== undefined ? { temperature } : {}),
     });
 
@@ -132,6 +296,32 @@ async function runAgentLoop(
 
     for (const toolUse of toolUseBlocks) {
       toolCallsMade++;
+
+      // Check if this is a native tool first
+      if (NATIVE_TOOL_NAMES.has(toolUse.name)) {
+        try {
+          const result = await handleNativeTool(
+            toolUse.name,
+            (toolUse.input as Record<string, unknown>) || {},
+            appId,
+          );
+          toolResults.push({
+            type: "tool_result",
+            tool_use_id: toolUse.id,
+            content: result,
+          });
+        } catch (e) {
+          toolResults.push({
+            type: "tool_result",
+            tool_use_id: toolUse.id,
+            content: `Tool call failed: ${e instanceof Error ? e.message : String(e)}`,
+            is_error: true,
+          });
+        }
+        continue;
+      }
+
+      // Otherwise try MCP tools
       const resolved = resolveToolServer(toolUse.name, tools);
       if (!resolved) {
         toolResults.push({

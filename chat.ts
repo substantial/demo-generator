@@ -14,6 +14,7 @@ import {
   getMessages,
   updateConversationTitle,
   deleteConversation,
+  listAppConnections,
   logUsage,
 } from "./db.ts";
 
@@ -101,6 +102,18 @@ Rules:
 - Supported chart types: bar, line, pie, doughnut, scatter, radar, polarArea, bubble
 - You can include multiple \`\`\`chartjs blocks in one response for side-by-side comparisons
 - Make charts visually appealing: use colors, proper labels, titles, and legends`;
+
+  // Append external data connections info
+  const connections = listAppConnections(appId);
+  const activeConns = connections.filter((c) => c.status === "active");
+  if (activeConns.length > 0) {
+    context += "\n\nEXTERNAL DATA CONNECTIONS:";
+    for (const conn of activeConns) {
+      context += `\n- [${conn.id}] "${conn.name}" (${conn.type}) — status: ${conn.status}`;
+    }
+    context += `\nYou can use query_database and fetch_api tools to pull data from these connections.`;
+    context += `\nUse import_data to populate this app's tables with real data from external sources.`;
+  }
 
   return context;
 }

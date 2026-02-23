@@ -10,6 +10,7 @@
     "@db/sqlite": "jsr:@db/sqlite",
     "openai": "npm:openai@^4",
     "@modelcontextprotocol/sdk": "npm:@modelcontextprotocol/sdk",
-    "zod": "npm:zod"
+    "zod": "npm:zod",
+    "postgres": "npm:postgres@^3.4"
   }
 }
