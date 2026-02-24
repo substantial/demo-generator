@@ -51,7 +51,7 @@ import { queryExternalDb, fetchExternalApi } from "./connections.ts";
 const MAX_TOOL_ITERATIONS = 10;
 
 // Native tool definitions for external data connections
-const NATIVE_TOOLS: Anthropic.Tool[] = [
+export const NATIVE_TOOLS: Anthropic.Tool[] = [
   {
     name: "save_connection",
     description: "Save an external database or API connection for this app. Supported types: postgresql, rest_api.",
@@ -110,9 +110,9 @@ const NATIVE_TOOLS: Anthropic.Tool[] = [
   },
 ];
 
-const NATIVE_TOOL_NAMES = new Set(NATIVE_TOOLS.map((t) => t.name));
+export const NATIVE_TOOL_NAMES = new Set(NATIVE_TOOLS.map((t) => t.name));
 
-async function handleNativeTool(
+export async function handleNativeTool(
   toolName: string,
   input: Record<string, unknown>,
   appId: string,

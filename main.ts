@@ -6,8 +6,9 @@ import { load } from "@std/dotenv";
 import { verify } from "@hono/hono/jwt";
 import { getCookie } from "@hono/hono/cookie";
 import { loginHandler, logoutHandler, authMiddleware, requireRoot, requireAppAccess, generateMagicLinkToken, magicLinkHandler } from "./auth.ts";
-import { listAppsWithCredentials, getApp, deleteApp, updateAppCredentials, deleteAppCredentials, getAppCredentials, updateAppTitle, updateAppPrd, updateAppErd, updateAppPocPlan, saveEditRequest, listEditRequests, listAllEditRequests, deleteEditRequest, saveUxLesson, listUxLessons, listUxLessonsForApp, deleteUxLesson, logUsage, getAllAppSpends, disableApp, enableApp, isAppDisabled, createAppPlaceholder, getAppBuildStatus, updateAppBuildStatus } from "./db.ts";
+import { listAppsWithCredentials, getApp, deleteApp, updateAppCredentials, deleteAppCredentials, getAppCredentials, updateAppTitle, updateAppPrd, updateAppErd, updateAppPocPlan, saveEditRequest, listEditRequests, listAllEditRequests, deleteEditRequest, saveUxLesson, listUxLessons, listUxLessonsForApp, deleteUxLesson, logUsage, getAllAppSpends, disableApp, enableApp, isAppDisabled, createAppPlaceholder, getAppBuildStatus, updateAppBuildStatus, getAppConnection, updateAppConnectionOAuthTokens } from "./db.ts";
 import { generateApp, editApp, extractUxLesson, generatePrd, generateErd, regenerateApp, generatePocPlan, backgroundGenerate, type EditProgressEvent } from "./generate.ts";
+import { runWidgetAgent, type WidgetSSEEvent } from "./widget-agent.ts";
 import { crud } from "./crud.ts";
 import { createChatRoutes } from "./chat.ts";
 import { createAgentRoutes } from "./agents.ts";
@@ -585,9 +586,138 @@ app.use("/api/apps/:appId/mcp-servers/*", openOrAuth);
 app.use("/api/apps/:appId/mcp-servers", openOrAuth);
 app.use("/api/apps/:appId/connections/*", openOrAuth);
 app.use("/api/apps/:appId/connections", openOrAuth);
+app.use("/api/apps/:appId/widget-chat", openOrAuth);
 
 // --- Models endpoint: any authenticated user ---
 app.use("/api/models", authMiddleware);
+
+// --- Widget conversational chat (SSE streaming) ---
+app.post("/api/apps/:appId/widget-chat", async (c) => {
+  const appId = c.req.param("appId");
+  const appRecord = getApp(appId);
+  if (!appRecord) return c.json({ error: "App not found" }, 404);
+
+  let body: { message?: string; conversation_id?: string };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "Invalid JSON body" }, 400);
+  }
+
+  if (!body.message?.trim()) {
+    return c.json({ error: "message is required" }, 400);
+  }
+
+  // Determine role from auth context
+  const role = c.get("role") || "";
+  const isRoot = role === "root";
+
+  // Build base URL for OAuth callback
+  const host = c.req.header("Host") ?? "localhost:8000";
+  const proto = c.req.header("X-Forwarded-Proto") ?? "http";
+  const baseUrl = `${proto}://${host}`;
+
+  return streamSSE(c, async (stream) => {
+    try {
+      await runWidgetAgent({
+        client,
+        appId,
+        message: body.message!.trim(),
+        conversationId: body.conversation_id,
+        isRoot,
+        baseUrl,
+        onEvent: async (event: WidgetSSEEvent) => {
+          await stream.writeSSE({
+            event: event.event,
+            data: JSON.stringify(event.data),
+          });
+        },
+      });
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "Widget chat failed";
+      await stream.writeSSE({
+        event: "error",
+        data: JSON.stringify({ text: msg }),
+      });
+    }
+  });
+});
+
+// --- OAuth callback (public, no auth) ---
+app.get("/api/apps/:appId/oauth/callback", async (c) => {
+  const appId = c.req.param("appId");
+  const code = c.req.query("code");
+  const state = c.req.query("state"); // connection ID
+
+  if (!code || !state) {
+    return c.html("<h2>Error</h2><p>Missing code or state parameter.</p>", 400);
+  }
+
+  const conn = getAppConnection(state);
+  if (!conn || conn.app_id !== appId) {
+    return c.html("<h2>Error</h2><p>Invalid state — connection not found.</p>", 400);
+  }
+
+  const config = JSON.parse(conn.config || "{}") as Record<string, unknown>;
+  const tokenUrl = config.token_url as string;
+  const clientId = config.client_id as string;
+  const clientSecret = config.client_secret as string;
+
+  if (!tokenUrl || !clientId || !clientSecret) {
+    return c.html("<h2>Error</h2><p>OAuth configuration incomplete.</p>", 400);
+  }
+
+  const host = c.req.header("Host") ?? "localhost:8000";
+  const proto = c.req.header("X-Forwarded-Proto") ?? "http";
+  const redirectUri = `${proto}://${host}/api/apps/${appId}/oauth/callback`;
+
+  try {
+    const tokenRes = await fetch(tokenUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "authorization_code",
+        code,
+        redirect_uri: redirectUri,
+        client_id: clientId,
+        client_secret: clientSecret,
+      }),
+    });
+
+    if (!tokenRes.ok) {
+      const errText = await tokenRes.text();
+      console.error(`[oauth] Token exchange failed: ${tokenRes.status} ${errText}`);
+      return c.html(`<h2>Authorization Failed</h2><p>Token exchange failed. Please try again.</p>`, 500);
+    }
+
+    const tokens = await tokenRes.json() as {
+      access_token: string;
+      refresh_token?: string;
+      expires_in?: number;
+    };
+
+    const expiresAt = tokens.expires_in
+      ? new Date(Date.now() + tokens.expires_in * 1000).toISOString()
+      : null;
+
+    updateAppConnectionOAuthTokens(
+      conn.id,
+      tokens.access_token,
+      tokens.refresh_token ?? null,
+      expiresAt,
+    );
+
+    return c.html(`<!DOCTYPE html>
+<html><head><title>Authorization Successful</title>
+<style>body{font-family:sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#f0f7ff}
+.card{background:#fff;padding:40px;border-radius:12px;box-shadow:0 4px 24px rgba(0,0,0,0.1);text-align:center;max-width:400px}
+h2{color:#2e7d32;margin-bottom:8px}p{color:#555}</style></head>
+<body><div class="card"><h2>Authorization Successful!</h2><p>You can close this tab and return to the app.</p></div></body></html>`);
+  } catch (e) {
+    console.error(`[oauth] Token exchange error:`, e);
+    return c.html(`<h2>Authorization Failed</h2><p>An error occurred during authorization. Please try again.</p>`, 500);
+  }
+});
 
 // --- LLM chat routes (structured conversations + stateless) ---
 app.route("/", createChatRoutes(client, openaiClient));
@@ -660,10 +790,11 @@ app.get("/apps/:appId", async (c) => {
     .replace(/\{\{APP_ID\}\}/g, appId)
     .replace(/\{\{TITLE\}\}/g, safeTitle)
     .replace(/\{\{HEADER_TEXT\}\}/g, headerText)
+    .replace(/\{\{IS_ROOT\}\}/g, isRoot ? 'true' : 'false')
     .replace(/\{\{SYSTEM_MSG\}\}/g, isRoot
-      ? "Describe changes you'd like. Send multiple messages &mdash; they'll queue and apply in order."
-      : 'Suggest changes to this app. Your ideas will be saved for review.')
-    .replace(/\{\{PLACEHOLDER\}\}/g, isRoot ? 'Describe a change...' : 'Suggest a change...');
+      ? "Ask questions about this app or describe changes you'd like to make."
+      : 'Ask questions or suggest changes to this app.')
+    .replace(/\{\{PLACEHOLDER\}\}/g, isRoot ? 'Ask a question or describe a change...' : 'Ask a question or suggest a change...');
   return c.html(wrapper);
 });
 

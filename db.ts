@@ -194,6 +194,12 @@ db.exec(`
   )
 `);
 
+// Migration: add OAuth columns to app_connections
+try { db.exec(`ALTER TABLE app_connections ADD COLUMN oauth_provider TEXT`); } catch {}
+try { db.exec(`ALTER TABLE app_connections ADD COLUMN oauth_access_token TEXT`); } catch {}
+try { db.exec(`ALTER TABLE app_connections ADD COLUMN oauth_refresh_token TEXT`); } catch {}
+try { db.exec(`ALTER TABLE app_connections ADD COLUMN oauth_token_expires_at TEXT`); } catch {}
+
 // === Spend Tracking ===
 
 const MODEL_PRICING: Record<string, { input: number; output: number }> = {
@@ -1304,6 +1310,10 @@ export interface AppConnection {
   connection_string: string | null;
   config: string;
   status: string;
+  oauth_provider: string | null;
+  oauth_access_token: string | null;
+  oauth_refresh_token: string | null;
+  oauth_token_expires_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -1344,6 +1354,24 @@ export function updateAppConnectionStatus(id: string, status: string): void {
 
 export function deleteAppConnection(id: string): void {
   db.exec(`DELETE FROM app_connections WHERE id = ?`, [id]);
+}
+
+export function updateAppConnectionOAuthTokens(
+  id: string,
+  accessToken: string,
+  refreshToken: string | null,
+  expiresAt: string | null,
+): void {
+  db.exec(
+    `UPDATE app_connections SET oauth_access_token = ?, oauth_refresh_token = ?, oauth_token_expires_at = ?, updated_at = datetime('now') WHERE id = ?`,
+    [accessToken, refreshToken, expiresAt, id],
+  );
+}
+
+export function getAppConnectionByName(appId: string, name: string): AppConnection | undefined {
+  return db
+    .prepare("SELECT * FROM app_connections WHERE app_id = ? AND name = ?")
+    .get(appId, name) as AppConnection | undefined;
 }
 
 export { db };

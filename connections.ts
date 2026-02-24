@@ -86,7 +86,10 @@ export async function fetchExternalApi(
     "Accept": "application/json",
   };
 
-  if (config.api_key) {
+  // Use OAuth access token if available, otherwise fall back to API key
+  if (conn.oauth_access_token) {
+    headers["Authorization"] = `Bearer ${conn.oauth_access_token}`;
+  } else if (config.api_key) {
     headers["Authorization"] = `Bearer ${config.api_key}`;
   }
   if (config.headers && typeof config.headers === "object") {
