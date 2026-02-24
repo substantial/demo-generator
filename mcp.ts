@@ -1,4 +1,8 @@
-// MCP client — communicates with MCP servers over HTTP using JSON-RPC 2.0
+// MCP client — communicates with MCP servers using the official SDK
+// Supports Streamable HTTP transport with proper initialize handshake.
+
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
 export interface McpTool {
   name: string;
@@ -13,65 +17,40 @@ export interface NamespacedMcpTool extends McpTool {
   serverApiKey?: string;
 }
 
-interface JsonRpcRequest {
-  jsonrpc: "2.0";
-  id: number;
-  method: string;
-  params?: Record<string, unknown>;
-}
-
-interface JsonRpcResponse {
-  jsonrpc: "2.0";
-  id: number;
-  result?: unknown;
-  error?: { code: number; message: string; data?: unknown };
-}
-
 const TIMEOUT_MS = 30_000;
 
-async function jsonRpcCall(
-  url: string,
-  method: string,
-  params?: Record<string, unknown>,
-  apiKey?: string,
-): Promise<unknown> {
-  const body: JsonRpcRequest = {
-    jsonrpc: "2.0",
-    id: 1,
-    method,
-    ...(params ? { params } : {}),
-  };
+async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`MCP operation timed out after ${ms}ms`)), ms);
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    clearTimeout(timer!);
+  }
+}
 
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-  };
+async function createMcpClient(
+  url: string,
+  apiKey?: string,
+): Promise<Client> {
+  const headers: Record<string, string> = {};
   if (apiKey) {
     headers["Authorization"] = `Bearer ${apiKey}`;
   }
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  const transport = new StreamableHTTPClientTransport(new URL(url), {
+    requestInit: { headers },
+  });
 
-  try {
-    const res = await fetch(url, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
+  const client = new Client({
+    name: "demo-generator",
+    version: "1.0.0",
+  });
 
-    if (!res.ok) {
-      throw new Error(`MCP server returned HTTP ${res.status}: ${await res.text()}`);
-    }
-
-    const json = (await res.json()) as JsonRpcResponse;
-    if (json.error) {
-      throw new Error(`MCP JSON-RPC error ${json.error.code}: ${json.error.message}`);
-    }
-    return json.result;
-  } finally {
-    clearTimeout(timer);
-  }
+  await withTimeout(client.connect(transport), TIMEOUT_MS);
+  return client;
 }
 
 export async function discoverTools(server: {
@@ -79,10 +58,17 @@ export async function discoverTools(server: {
   name: string;
   api_key?: string | null;
 }): Promise<McpTool[]> {
-  const result = (await jsonRpcCall(server.url, "tools/list", undefined, server.api_key ?? undefined)) as {
-    tools?: McpTool[];
-  };
-  return result?.tools ?? [];
+  const client = await createMcpClient(server.url, server.api_key ?? undefined);
+  try {
+    const result = await withTimeout(client.listTools(), TIMEOUT_MS);
+    return (result?.tools ?? []).map((t) => ({
+      name: t.name,
+      description: t.description,
+      inputSchema: t.inputSchema as Record<string, unknown> | undefined,
+    }));
+  } finally {
+    await client.close().catch(() => {});
+  }
 }
 
 export async function discoverAllTools(
@@ -118,12 +104,24 @@ export async function callTool(
   toolName: string,
   args: Record<string, unknown>,
 ): Promise<unknown> {
-  return jsonRpcCall(
-    server.url,
-    "tools/call",
-    { name: toolName, arguments: args },
-    server.api_key ?? undefined,
-  );
+  const client = await createMcpClient(server.url, server.api_key ?? undefined);
+  try {
+    const result = await withTimeout(
+      client.callTool({ name: toolName, arguments: args }),
+      TIMEOUT_MS,
+    );
+    // Extract text content from MCP result
+    if (result?.content && Array.isArray(result.content)) {
+      const texts = result.content
+        .filter((c: { type: string }) => c.type === "text")
+        .map((c: { text: string }) => c.text);
+      if (texts.length === 1) return texts[0];
+      if (texts.length > 1) return texts.join("\n");
+    }
+    return result;
+  } finally {
+    await client.close().catch(() => {});
+  }
 }
 
 export function mcpToolsToAnthropicTools(
