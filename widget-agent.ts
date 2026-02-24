@@ -162,8 +162,10 @@ IMPORTANT RULES:
 
   const system = buildSystemContext(appId, app.title, widgetInstructions);
 
-  // Assemble tools
-  const allTools: Anthropic.Tool[] = [...WIDGET_TOOLS, ...NATIVE_TOOLS];
+  // Assemble tools — deduplicate by name (MCP tools could collide with native/widget tools)
+  const toolsByName = new Map<string, Anthropic.Tool>();
+  for (const t of WIDGET_TOOLS) toolsByName.set(t.name, t);
+  for (const t of NATIVE_TOOLS) toolsByName.set(t.name, t);
 
   // Also discover any MCP server tools registered for this app
   const mcpServers = listMcpServers(appId);
@@ -171,11 +173,14 @@ IMPORTANT RULES:
   if (mcpServers.length > 0) {
     try {
       mcpTools = await discoverAllTools(mcpServers);
-      allTools.push(...(mcpToolsToAnthropicTools(mcpTools) as Anthropic.Tool[]));
+      for (const t of mcpToolsToAnthropicTools(mcpTools) as Anthropic.Tool[]) {
+        toolsByName.set(t.name, t);
+      }
     } catch {
       // MCP discovery failed, continue without MCP tools
     }
   }
+  const allTools: Anthropic.Tool[] = Array.from(toolsByName.values());
 
   const model = resolveModel("sonnet");
   let currentMessages = messages;

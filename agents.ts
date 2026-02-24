@@ -233,18 +233,21 @@ async function runAgentLoop(
 
   const system = buildSystemContext(appId, appTitle, systemBase || undefined);
 
-  // Discover MCP tools
+  // Discover MCP tools — deduplicate by name
   const mcpServers = getAgentMcpServers(agentId);
   let tools: NamespacedMcpTool[] = [];
-  let anthropicTools: Anthropic.Tool[] = [];
+  const toolsByName = new Map<string, Anthropic.Tool>();
 
   // Always include native connection tools
-  anthropicTools.push(...NATIVE_TOOLS);
+  for (const t of NATIVE_TOOLS) toolsByName.set(t.name, t);
 
   if (mcpServers.length > 0) {
     tools = await discoverAllTools(mcpServers);
-    anthropicTools.push(...mcpToolsToAnthropicTools(tools) as Anthropic.Tool[]);
+    for (const t of mcpToolsToAnthropicTools(tools) as Anthropic.Tool[]) {
+      toolsByName.set(t.name, t);
+    }
   }
+  const anthropicTools: Anthropic.Tool[] = Array.from(toolsByName.values());
 
   const model = resolveModel(modelOverride || agent.model);
   const temperature = temperatureOverride ?? agent.temperature ?? undefined;
