@@ -109,7 +109,9 @@ MODEL SELECTION:
 - You can also pass temperature (0.0-1.0): { temperature: 0.7 }
 
 RULES FOR LLM FEATURES:
-- NEVER hardcode or fake AI responses — always call one of these endpoints
+- NEVER hardcode or fake AI responses — always use the appropriate tool:
+  - Text generation, chat, summarization, data analysis → backend LLM API (stateless /chat or persistent /conversations)
+  - Image understanding, embeddings, classification, similarity → client-side transformers.js (see CLIENT-SIDE ML section)
 - For chatbots/conversational UIs: use persistent conversations so history survives page reloads
 - For one-off analysis (e.g. "analyze this data" button): use stateless /chat
 - The LLM automatically knows about the app's ALL tables and data — no need to pass it yourself
@@ -193,13 +195,56 @@ AGENT INVOCATION:
 The agent's system prompt is: static_prompt + all linked guidelines' content + app data context.
 If MCP servers are linked, the agent can call external tools automatically (tool use loop).
 
+CLIENT-SIDE ML WITH TRANSFORMERS.JS:
+Use transformers.js for ML tasks that run entirely in the browser — no backend needed.
+
+WHEN TO USE (instead of the backend LLM API):
+- Image understanding, captioning, visual search → transformers.js
+- Text/image embeddings & similarity search → transformers.js
+- Text classification, sentiment analysis → transformers.js
+- Object detection in images → transformers.js
+- Text generation, chat, summarization, data analysis → backend LLM API (stateless /chat or persistent /conversations)
+
+CDN IMPORT (use ES module):
+<script type="module">
+import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers';
+env.allowLocalModels = false; // always fetch from HuggingFace Hub
+</script>
+
+RECOMMENDED MODELS:
+- Image embeddings / visual search: Xenova/clip-vit-base-patch32
+- Text embeddings / similarity: Xenova/all-MiniLM-L6-v2
+- Sentiment / text classification: Xenova/distilbert-base-uncased-finetuned-sst-2-english
+- Object detection: Xenova/detr-resnet-50
+
+PIPELINE CACHING PATTERN (always use this — do NOT create a new pipeline on every call):
+let _pipelinePromise = null;
+async function getClassifier() {
+  if (!_pipelinePromise) {
+    _pipelinePromise = pipeline('sentiment-analysis', 'Xenova/distilbert-base-uncased-finetuned-sst-2-english');
+  }
+  return _pipelinePromise;
+}
+
+IMAGE INPUT HANDLING:
+- Use <input type="file" accept="image/*"> for image uploads
+- Convert to object URL: const url = URL.createObjectURL(file);
+- Pass the object URL directly to the pipeline
+- Client-side FileReader and file inputs ARE allowed for ML features
+
+RULES:
+- ALWAYS show a loading indicator during model download and inference (models are 50-200MB on first load)
+- ALWAYS cache the pipeline instance — never call pipeline() twice for the same task
+- NEVER fake or hardcode ML results — always run the real model
+- Use URL.createObjectURL() for image inputs, not base64 data URIs
+
 LOGOS & AVATARS:
 - For logos: https://ui-avatars.com/api/?name=CompanyName&size=128&background=random
 
 CRITICAL GUARDRAILS — DO NOT VIOLATE:
-- NEVER build features beyond CRUD operations + chat/conversation APIs + agent APIs
+- NEVER build features beyond CRUD operations + chat/conversation APIs + agent APIs + client-side ML
 - NEVER create login/signup forms — the platform handles authentication automatically
-- NEVER attempt file uploads, WebSockets, email sending, payment processing, or any server-side feature
+- NEVER attempt server-side file uploads, WebSockets, email sending, payment processing, or any server-side feature (client-side FileReader and file inputs ARE allowed for ML features)
 - NEVER create server-side code — your output is HTML + table definitions + seedData ONLY
 - If a request implies unsupported capabilities, implement the closest client-side equivalent with a comment explaining the limitation`;
 
@@ -226,7 +271,7 @@ Your ENTIRE response must be a single valid JSON object. No code fences, no surr
 - Preserve existing functionality unless the edit changes it
 - May use CDN imports from esm.sh, jsdelivr, unpkg
 
-GUARDRAILS: Never build login/signup forms (platform handles auth), no file uploads, WebSockets, email, payments, or server-side code. Output is HTML + tables + seedData only.`;
+GUARDRAILS: Never build login/signup forms (platform handles auth), no server-side file uploads, WebSockets, email, payments, or server-side code. Client-side FileReader and file inputs ARE allowed for ML features (transformers.js). Output is HTML + tables + seedData only.`;
 
 const EDIT_DIFF_SYSTEM_PROMPT = `You are a web app editor. You receive current HTML + schema and a change description.
 
@@ -260,7 +305,7 @@ TABLE RULES (same as full edit):
 - Use {{APP_ID}} placeholder in any new API URLs
 - Preserve existing functionality unless the edit specifically changes it
 
-GUARDRAILS: Never build login/signup forms, no file uploads, WebSockets, email, payments, or server-side code.`;
+GUARDRAILS: Never build login/signup forms, no server-side file uploads, WebSockets, email, payments, or server-side code. Client-side FileReader and file inputs ARE allowed for ML features (transformers.js).`;
 
 export async function extractUxLesson(
   editDescription: string,
@@ -1090,9 +1135,10 @@ const PLATFORM_CONSTRAINTS = `PLATFORM CONSTRAINTS (the generated app runs on th
 - Data persistence via SQLite tables accessed through REST CRUD endpoints
 - LLM chat available via stateless /chat and persistent /conversations endpoints
 - AI agents with custom prompts, guidelines, and MCP tool integrations
+- Client-side ML via transformers.js for image understanding, embeddings, classification, similarity search
 - Authentication is handled by the platform — do NOT design login/signup flows
-- No file uploads, WebSockets, email, payment processing, or server-side code
-- CDN imports allowed (Chart.js, D3, etc.)
+- No server-side file uploads, WebSockets, email, payment processing, or server-side code (client-side FileReader IS allowed for ML features)
+- CDN imports allowed (Chart.js, D3, transformers.js, etc.)
 - All interactivity must be client-side JavaScript`;
 
 export async function generatePrd(
@@ -1184,7 +1230,7 @@ Return a well-structured markdown ERD with these sections:
 1. **Database Schema** — Exact table and column definitions (name, type, nullable, defaults). Remember: every table auto-gets \`id INTEGER PRIMARY KEY AUTOINCREMENT\`
 2. **Seed Data Plan** — What realistic seed data to generate (10-15 rows per main table) with specific examples
 3. **API Integration Plan** — Which CRUD endpoints the app will use and how
-4. **AI/Chat Integration** — How to use stateless /chat or persistent /conversations for AI features
+4. **AI/Chat Integration** — How to use stateless /chat or persistent /conversations for AI features, or client-side transformers.js for image/embedding/classification tasks
 5. **UI Architecture** — Component layout, sections, navigation structure
 6. **Interactive Features** — Client-side interactivity, filtering, sorting, modals, charts
 7. **Error Handling** — How to handle API errors, loading states, empty states
